@@ -1,6 +1,8 @@
 # slop
 A `top`-like utility for the Slurm HPC batch job scheduler
 
+![slop screenshot](img/slop_screenshot1.png)
+
 # how to install globally
 
 You can build a binary with a tool such as `pyinstaller`:
