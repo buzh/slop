@@ -1,6 +1,11 @@
 # slop
 A `top`-like utility for the Slurm HPC batch job scheduler
 
+# dependencies and requirements
+
+Uses (Urwid)[https://urwid.org] to build the TUI.
+Runs on any host with `scontrol` set up.
+
 ![slop screenshot](img/slop_screenshot1.png)
 
 # install/run locally
@@ -17,9 +22,10 @@ python -m slop.main
 # how to install globally
 
 You can build a standalone binary with a tool such as `pyinstaller`.
-Clone the repo and install deps like above, then:
+Clone the repo, create venv and install deps as above, then:
 
 ```
-pyinstaller slop/main.py
-cp dist/main /somewhere/in/path
+pip install pyinstaller
+pyinstaller --onefile slop/main.py
+cp dist/main /somewhere/in/path  # "main" is the resulting binary
 ```
