@@ -3,7 +3,7 @@ A `top`-like utility for the Slurm HPC batch job scheduler
 
 # dependencies and requirements
 
-Uses (Urwid)[https://urwid.org] to build the TUI.
+Uses [Urwid](https://urwid.org) to build the TUI.
 Runs on any host with `scontrol` set up.
 
 ![slop screenshot](img/slop_screenshot1.png)
