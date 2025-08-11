@@ -11,8 +11,8 @@ Runs on any host with `scontrol` set up.
 # install/run locally
 
 ```
-python -m venv slop
-source slop/bin/activate
+python -m venv slop_venv
+source slop_venv/bin/activate
 git clone https://github.com/buzh/slop
 cd slop
 pip install -r slop/requirements.txt
