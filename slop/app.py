@@ -25,7 +25,7 @@ class SC(u.WidgetWrap):
 
         self.asyncloop = u.AsyncioEventLoop()
         self.loop = u.MainLoop(self, palette, event_loop=self.asyncloop, unhandled_input=unhandled_input)
-        self.jobfetcher = SlurmJobFetcher(loop=asyncio.get_event_loop())
+        self.jobfetcher = SlurmJobFetcher(loop=self.asyncloop._loop)
         self.jobs = Jobs(self.jobfetcher.fetch_sync())
 
         self.refreshing = False
