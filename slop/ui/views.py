@@ -123,15 +123,6 @@ class ScreenViewUsers(u.WidgetWrap): # List users on the left, user jobs on the 
             self.draw_jobs()
             return None
 
-        if key == 'x':
-            print("woop!")
-            focus_w, _ = self.jobwalker.get_focus()
-            if hasattr(focus_w, "jobid"):
-                job = self.jobs.job_index.get(focus_w.jobid)
-                job.widget.refresh()
-                self.draw_jobs()
-            return None
-
         return super().keypress(size, key)
 
     def modified(self):
@@ -159,7 +150,8 @@ class ScreenViewUsers(u.WidgetWrap): # List users on the left, user jobs on the 
         self.draw_users()
         self.draw_jobs()
 
-    def categorize_jobs(self, jobtable): # Organize jobs according to state
+    """ Organize jobs according to state """
+    def categorize_jobs(self, jobtable):
         job_sets = {
                 "Array": [],
                 "Running": [],
@@ -170,11 +162,12 @@ class ScreenViewUsers(u.WidgetWrap): # List users on the left, user jobs on the 
 
 
         for job in jobtable:
-            # skip array children, rendered under parent
+            """ skip array children, rendered under parent """
             if job.is_array_child:
                 continue
             job_sets[job.get_state_category()].append(job)
         return job_sets
+
     """ Add labeled divider if requested, then widgets per job in joblist """
     def build_job_widgets(self, joblist, label=None):
         if not joblist:

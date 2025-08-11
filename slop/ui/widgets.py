@@ -134,7 +134,8 @@ class UserJobListWidget(u.WidgetWrap):
             elif col == "job_id":
                 if job.is_array_parent:
                     marker = "▼" if not job.array_collapsed_widget else "▶"
-                    t = f"{marker} {job.job_id}_"
+                    c = compress_int_range([child.array_task_id["number"] for child in job.array_children])
+                    t = f"{marker} {job.job_id}_[{c}]"
                 else:
                     t = str(job.job_id)
             elif col == "array_tasks":
