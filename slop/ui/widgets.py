@@ -134,11 +134,11 @@ class UserJobListWidget(u.WidgetWrap):
             elif col == "job_id":
                 if job.is_array_parent:
                     marker = "▼" if not job.array_collapsed_widget else "▶"
-                    c = compress_int_range([child.array_task_id["number"] for child in job.array_children])
-                    t = f"{marker} {job.job_id}_[{c}]"
+                    t = f"{marker} {job.job_id}_[*]"
                 else:
                     t = str(job.job_id)
             elif col == "array_tasks":
+                    
                     t = compress_int_range(job.array_task_ids) 
             elif col == "start_time": # epoch -> 1d2h3m
                 if self.start_time:
