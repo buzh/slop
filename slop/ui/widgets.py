@@ -6,14 +6,6 @@ from slop.slurm import *
 from slop import __version__
 from slop.ui.style import get_display_attr
 
-class ScrollText(u.Text):
-   def selectable(self):
-       return True
-
-   def keypress(self, size, key):
-       return key
-
-
 class IndentHeader(u.WidgetWrap):
     def __init__(self, header):
         indented_widget = u.Columns([
@@ -103,7 +95,6 @@ class UserJobListWidget(u.WidgetWrap):
         self.time_limit = job.time_limit["number"]
         self.jobid = job.job_id
         self.display_attr = get_display_attr(job)
-        self.state_full = ",".join(s for s in job.job_state)
         self.is_array = job.is_array
         self.widget = self.create_widget()
         super().__init__(self.widget)

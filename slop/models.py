@@ -1,14 +1,18 @@
+""" data models for slop """
 import urwid as u
 from slop.ui.widgets import UserJobListWidget
 from slop.slurm import *
 
+""" a singular job """
 class Job:
     def __init__(self, job_data):
+        # populate attributes dynamically from json
         for key, value in job_data.items():
             setattr(self, key, value)
-        self.states = set(self.job_state) # store states as set to avoid enumerating repeatedly later
+
+        # store states as set to avoid enumerating repeatedly later
+        self.states = set(self.job_state) 
         self._task_id = self._extract_number("array_task_id")
-        self._cores = self.cpus["number"]
         e = ",".join(self.exit_code["status"])
         c = self.exit_code["return_code"]["number"]
         self.returncode = f"{e}({c})"
@@ -31,8 +35,9 @@ class Job:
         self.array_parent = None
         self.array_collapsed_widget = True
 
+    """ widgets are properties so they are created only when called """
     @property
-    def widget(self): # as property to not create unless called
+    def widget(self):
         if not hasattr(self, '_widget'):
             self._widget = UserJobListWidget(self)
         return self._widget
@@ -62,16 +67,17 @@ class Job:
             return "Pending"
         else:
             return "Other"
-
-    def __repr__(self): # Make each top level slurm job attribute an attribute of this class
+    """ makes each top level slurm job attribute an attribute of this class object """
+    def __repr__(self):
         attrs = ', '.join(f"{key}={value}" for key, value in self.__dict__.items())
         return f"Job({attrs})"
 
+    """ helper function for right/down arrow in array job widgets """
     def toggle_expand(self):
         self.array_collapsed_widget = not self.array_collapsed_widget
         del self._widget
 
-
+""" a collection of Job objects created from fetched scontrol json """
 class Jobs:
     def __init__(self, slurm_json):
         self.jobs = []
@@ -129,4 +135,3 @@ class Jobs:
                 usertable[user]['pending'] += 1
 
         self.usertable = usertable
-

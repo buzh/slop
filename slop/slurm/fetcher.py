@@ -4,7 +4,6 @@ import json
 class SlurmJobFetcher:
     def __init__(self, loop=None):
         self.jobs = {"jobs": []}
-        self.interval = 3
         self.loop = loop or asyncio.get_event_loop()
 
     async def get_json(self):

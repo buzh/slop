@@ -79,7 +79,7 @@ class ScreenViewUsers(u.WidgetWrap): # List users on the left, user jobs on the 
         u.connect_signal(self.jobs, 'jobs_updated', self.on_jobs_update)
         u.WidgetWrap.__init__(self, self.w)
 
-    def on_jobs_update(self, *args, **kwargs): # Only refresh if window is active
+    def on_jobs_update(self, *_args, **_kwargs): # Only refresh if window is active
         if self.is_active():
             self.update()
 

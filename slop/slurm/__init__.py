@@ -1,3 +1,4 @@
+""" fetching functions for slop """
 from .state import *
 from .fetcher import *
 

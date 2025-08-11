@@ -13,7 +13,7 @@ def is_failed_or_completed(job) -> bool:
 def is_array(job) -> bool:
     return bool(job.is_array)
 
-reasons = { 
+reasons = {
  'AccountingPolicy': 'Fallback reason when others not matched.',
  'AccountNotAllowed': 'Job is in an account not allowed in a partition.',
  'AssocGrpBB': 'The job\'s association has reached its aggregate Burst Buffer limit.',

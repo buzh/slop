@@ -63,9 +63,6 @@ class SC(u.WidgetWrap):
         self.refreshing = False
         self.loop.set_alarm_in(3, lambda loop, user_data: asyncio.create_task(self.auto_refresh()))
 
-    async def update_jobs(self):
-        slurm_job_data = await self.jobfetcher.fetch()
-        self.jobs.update_slurmdata(slurm_job_data)
 
     def show_app_info(self):
         info_text = f"""
@@ -81,20 +78,16 @@ class SC(u.WidgetWrap):
         self.open_overlay(overlay_widget, height=overlay_widget.overlay_height)
 
 
-
     def show_splash_screen(self):
         splash_text = "Welcome to slop\nPlease wait while fetching job data"
         overlay_widget = GenericOverlayText(self, splash_text)
         self.open_overlay(overlay_widget, height=overlay_widget.overlay_height)
 
-        def on_job_update(*args):
+        def on_job_update(*_args):
             self.close_overlay()
             u.disconnect_signal(self.jobs, 'jobs_updated', on_job_update)
         u.connect_signal(self.jobs, 'jobs_updated', on_job_update)
         
-    def show_job_overlay(self):
-        self.open_overlay(JobInfoOverlay(job))
-        self.overlay_showing = 1
 
     def show_screen_users(self):
         body = u.AttrMap(self.screen_users, 'bg')
