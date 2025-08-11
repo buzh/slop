@@ -123,6 +123,15 @@ class ScreenViewUsers(u.WidgetWrap): # List users on the left, user jobs on the 
             self.draw_jobs()
             return None
 
+        if key == 'x':
+            print("woop!")
+            focus_w, _ = self.jobwalker.get_focus()
+            if hasattr(focus_w, "jobid"):
+                job = self.jobs.job_index.get(focus_w.jobid)
+                job.widget.refresh()
+                self.draw_jobs()
+            return None
+
         return super().keypress(size, key)
 
     def modified(self):
@@ -150,8 +159,7 @@ class ScreenViewUsers(u.WidgetWrap): # List users on the left, user jobs on the 
         self.draw_users()
         self.draw_jobs()
 
-    """ Organize jobs according to state """
-    def categorize_jobs(self, jobtable):
+    def categorize_jobs(self, jobtable): # Organize jobs according to state
         job_sets = {
                 "Array": [],
                 "Running": [],
@@ -162,7 +170,7 @@ class ScreenViewUsers(u.WidgetWrap): # List users on the left, user jobs on the 
 
 
         for job in jobtable:
-            """ skip array children, rendered under parent """
+            # skip array children, rendered under parent
             if job.is_array_child:
                 continue
             job_sets[job.get_state_category()].append(job)
@@ -187,18 +195,20 @@ class ScreenViewUsers(u.WidgetWrap): # List users on the left, user jobs on the 
 
                 if not job.array_collapsed_widget:
                     children = sorted(job.array_children, key=lambda j: j.job_id)
-                    numchildren = 0
+                    _pending_children = 0
                     runchildw = []
                     for child in children:
                         if is_running(child):
                             runchildw.append(ChildJobWidget(child))
                         else:
-                            numchildren += 1
+                            _pending_children += 1
                     if runchildw:
                         hw = UserJobListHeader(self, runchildw[0])
                         widgets.append(IndentHeader(hw))
                         widgets.extend(runchildw)
-                    widgets.append(ArrayPendWidget(numchildren))
+
+                    if _pending_children > 0:
+                        widgets.append(ArrayPendWidget(_pending_children))
 
             elif job.is_array_child:
                 if job.array_parent:
