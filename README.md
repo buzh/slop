@@ -26,6 +26,6 @@ Clone the repo, create venv and install deps as above, then:
 
 ```
 pip install pyinstaller
-pyinstaller --onefile slop/main.py
-cp dist/main /somewhere/in/path  # "main" is the resulting binary
+pyinstaller --onefile slop/main.py -n slop
+cp dist/slop /somewhere/in/path  # "main" is the resulting binary
 ```
