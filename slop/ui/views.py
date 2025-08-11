@@ -109,9 +109,6 @@ class ScreenViewUsers(u.WidgetWrap): # List users on the left, user jobs on the 
                     self.draw_jobs()
                 elif job:
                     self.main_screen.open_overlay(JobInfoOverlay(job))
-                    #explore_widget = u.LineBox(u.Filler(MyTreeExplorer(job.__dict__), height=self.main_screen.height))
-                    #explore_widget = u.AttrMap(explore_widget, 'bg')
-                    #self.main_screen.open_overlay(explore_widget)
             return None
 
         if key in sort_keys and self.w.get_focus_column() == 1:
@@ -178,8 +175,8 @@ class ScreenViewUsers(u.WidgetWrap): # List users on the left, user jobs on the 
                 continue
             job_sets[job.get_state_category()].append(job)
         return job_sets
-
-    def build_job_widgets(self, joblist, label=None): # Add labeled divider if requested, then widgets per job in joblist
+    """ Add labeled divider if requested, then widgets per job in joblist """
+    def build_job_widgets(self, joblist, label=None):
         if not joblist:
             return []
         
@@ -188,7 +185,8 @@ class ScreenViewUsers(u.WidgetWrap): # List users on the left, user jobs on the 
         if label:
             widgets.append(JobListDivider(f"{label}"))
 
-        widgets.append(UserJobListHeader(self, joblist[0].widget)) # assume all jobs in joblist have the same fields, use 1st to create header
+        """ assume all jobs in joblist have the same fields, user first to create header """
+        widgets.append(UserJobListHeader(self, joblist[0].widget))
 
         for job in joblist:
             if job.is_array_parent:
