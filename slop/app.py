@@ -31,6 +31,7 @@ class SC(u.WidgetWrap):
         self.refreshing = False
 
         self.header = Header()
+        self.footer = Footer()
         self.confirmexit = ConfirmExit(self)
 
         self.overlay_showing = 0
@@ -43,7 +44,7 @@ class SC(u.WidgetWrap):
 
         self.screen_users = ScreenViewUsers(self, self.jobs)
         self.body = u.AttrMap(self.screen_users, 'bg')
-        self.frame = u.Frame(header=self.header, body=self.body)
+        self.frame = u.Frame(header=self.header, body=self.body, footer=self.footer)
         super().__init__(self.frame)
         self.show_screen_users()
         self.show_splash_screen()

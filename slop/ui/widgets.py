@@ -221,6 +221,11 @@ class Header(u.WidgetWrap):
         header = u.AttrWrap(u.Columns([u.Text(f"Slurm Top {__version__}"), (u.Text("Q to quit", align='right'))]), 'header')
         u.WidgetWrap.__init__(self, header)
 
+class Footer(u.WidgetWrap):
+    def __init__(self):
+        header = u.AttrWrap(u.Columns([u.Text("F1: Help"), (u.Text("F2: Switch view"), align='right'))]), 'header')
+        u.WidgetWrap.__init__(self, header)
+
 
 class GenericOverlayText(u.WidgetWrap):
     def __init__(self, main_screen, text):
