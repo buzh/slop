@@ -1,2 +1,2 @@
 """ slop is a top-like tool for slurm """
-__version__ = "1.0.1-beta1"
+__version__ = "1.0.2-rc1"
