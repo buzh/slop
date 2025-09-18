@@ -65,6 +65,7 @@ class SC(u.WidgetWrap):
 
 
     def show_app_info(self):
+        fetch_timeout = self.jobfetcher.last_fetch_duration.total_seconds()
         info_text = f"""
         === Slurm Top (a.k.a slop) {__version__} ===
         
@@ -72,6 +73,8 @@ class SC(u.WidgetWrap):
         Copyright (C) 2025 Andreas Skau (andreas@scheen.no)
 
         https://github.com/buzh/slop
+
+        Current scontrol timeout: {fetch_timeout:.1f}s
         """
 
         overlay_widget = GenericOverlayText(self, info_text)
