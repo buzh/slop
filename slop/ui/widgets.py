@@ -223,7 +223,7 @@ class Header(u.WidgetWrap):
 
 class Footer(u.WidgetWrap):
     def __init__(self):
-        header = u.AttrWrap(u.Columns([u.Text("F1: Help"), (u.Text("F2: Switch view"), align='right'))]), 'header')
+        header = u.AttrWrap(u.Columns([u.Text("F1: Help"), (u.Text("F2: Switch view")))]), 'header')
         u.WidgetWrap.__init__(self, header)
 
 
