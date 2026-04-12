@@ -31,8 +31,13 @@ class JobDetailSacct(u.WidgetWrap):
         # Wrap in LineBox with title
         state = ' '.join(sacct_job.get('state', {}).get('current', ['UNKNOWN']))
         title = f"Job {sacct_job.get('job_id', 'N/A')} - {state}"
-        body = u.LineBox(listbox, title=title)
-        body = u.AttrMap(body, 'jobid', 'jobid')
+        body = u.LineBox(
+            listbox,
+            title=title,
+            tlcorner='╭', trcorner='╮',
+            blcorner='╰', brcorner='╯'
+        )
+        body = u.AttrMap(body, 'normal', 'normal')
         super().__init__(body)
 
     def build_widgets(self):
@@ -68,9 +73,9 @@ class JobDetailSacct(u.WidgetWrap):
 
         # Color-code state
         if state in ["FAILED", "TIMEOUT", "OUT_OF_MEMORY", "CANCELLED"]:
-            widgets.append(u.AttrMap(u.Text(f"State       : {state}"), 'failed'))
+            widgets.append(u.AttrMap(u.Text(f"State       : {state}"), 'state_failed'))
         elif state in ["COMPLETED"]:
-            widgets.append(u.AttrMap(u.Text(f"State       : {state}"), 'running'))
+            widgets.append(u.AttrMap(u.Text(f"State       : {state}"), 'success'))
         else:
             widgets.append(u.Text(f"State       : {state}"))
 
@@ -79,7 +84,7 @@ class JobDetailSacct(u.WidgetWrap):
         exit_code = exit_code_info.get('return_code', {}).get('number', 'N/A')
         exit_status = ', '.join(exit_code_info.get('status', []))
         if state in ["FAILED", "TIMEOUT", "OUT_OF_MEMORY"]:
-            widgets.append(u.AttrMap(u.Text(f"Exit Code   : {exit_code} ({exit_status})"), 'failed'))
+            widgets.append(u.AttrMap(u.Text(f"Exit Code   : {exit_code} ({exit_status})"), 'error'))
         else:
             widgets.append(u.Text(f"Exit Code   : {exit_code} ({exit_status})"))
 
@@ -139,11 +144,11 @@ class JobDetailSacct(u.WidgetWrap):
             widgets.append(u.Text(f"CPU Allocated : {cpu_hours_alloc:.2f} core-hours"))
 
             if cpu_efficiency >= 80:
-                widgets.append(u.AttrMap(u.Text(f"CPU Efficiency: {cpu_efficiency:.1f}%"), 'running'))
+                widgets.append(u.AttrMap(u.Text(f"CPU Efficiency: {cpu_efficiency:.1f}%"), 'success'))
             elif cpu_efficiency >= 50:
-                widgets.append(u.AttrMap(u.Text(f"CPU Efficiency: {cpu_efficiency:.1f}%"), 'pending'))
+                widgets.append(u.AttrMap(u.Text(f"CPU Efficiency: {cpu_efficiency:.1f}%"), 'warning'))
             else:
-                widgets.append(u.AttrMap(u.Text(f"CPU Efficiency: {cpu_efficiency:.1f}% (LOW)"), 'failed'))
+                widgets.append(u.AttrMap(u.Text(f"CPU Efficiency: {cpu_efficiency:.1f}% (LOW)"), 'error'))
 
         # Memory info
         if mem_alloc_mb > 0:
@@ -155,7 +160,7 @@ class JobDetailSacct(u.WidgetWrap):
             time_efficiency = (elapsed / (limit['number'] * 60)) * 100
             widgets.append(u.Text(f"Time Used     : {time_efficiency:.1f}% of limit"))
             if time_efficiency > 95:
-                widgets.append(u.AttrMap(u.Text("  (Consider requesting more time)"), 'pending'))
+                widgets.append(u.AttrMap(u.Text("  (Consider requesting more time)"), 'warning'))
 
         widgets.append(u.Divider())
 
@@ -180,7 +185,7 @@ class JobDetailSacct(u.WidgetWrap):
                 step_line = f"  {step_name:10s} | {step_state:10s} | {format_duration(step_elapsed):>10s} | Exit: {step_exit_code}"
 
                 if step_state == 'FAILED':
-                    widgets.append(u.AttrMap(u.Text(step_line), 'failed'))
+                    widgets.append(u.AttrMap(u.Text(step_line), 'error'))
                 elif step_state == 'COMPLETED':
                     widgets.append(u.Text(step_line))
                 else:

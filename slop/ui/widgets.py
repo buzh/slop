@@ -35,7 +35,7 @@ class ChildJobWidget(u.WidgetWrap):
 class ArrayPendWidget(u.WidgetWrap):
     def __init__(self, pending):
         widget = u.Columns([u.Text(f"  [+ {pending} more pending]")], dividechars=1)
-        widget = u.AttrMap(widget, 'faded', 'jobid_selected')
+        widget = u.AttrMap(widget, 'faded', 'normal_selected')
         super().__init__(widget)
 
     def selectable(self):
@@ -116,7 +116,7 @@ class UserJobListWidget(u.WidgetWrap):
             wrapped_text = self.get_label(job)
 
         col = u.Columns(wrapped_text, dividechars=1)
-        w = u.AttrMap(col, 'jobid', 'jobid_selected')
+        w = u.AttrMap(col, 'normal', 'normal_selected')
 
         return w
 
@@ -203,7 +203,7 @@ class UserItem(u.WidgetWrap):
         i = f"[{i}]"
         status = f"(R:{running} P:{pending})" 
         label = u.Columns([('given', 6, u.Text(('buttons', i))), u.Text(user, align='left'), u.Text(status, align='right')])
-        item = u.AttrMap(label, "jobid", "jobid_selected")
+        item = u.AttrMap(label, "normal", "normal_selected")
         u.WidgetWrap.__init__(self, item)
 
     def selectable(self):
@@ -224,7 +224,7 @@ class ExpandableGroupMarker(u.WidgetWrap):
     """Selectable text marker for expandable job groups."""
     def __init__(self, text, group_key):
         self.group_key = group_key
-        super().__init__(u.AttrMap(u.Text(text), 'faded', 'jobid_selected'))
+        super().__init__(u.AttrMap(u.Text(text), 'faded', 'normal_selected'))
 
     def selectable(self):
         return True
@@ -306,10 +306,8 @@ class GenericOverlayText(u.WidgetWrap):
         t = u.Text(text, align='center')
         linebox = u.LineBox(
             u.Filler(t),
-            tlcorner=u.LineBox.Symbols.LIGHT.TOP_LEFT_ROUNDED,
-            trcorner=u.LineBox.Symbols.LIGHT.TOP_RIGHT_ROUNDED,
-            blcorner=u.LineBox.Symbols.LIGHT.BOTTOM_LEFT_ROUNDED,
-            brcorner=u.LineBox.Symbols.LIGHT.BOTTOM_RIGHT_ROUNDED
+            tlcorner='╭', trcorner='╮',
+            blcorner='╰', brcorner='╯'
         )
         widget = u.AttrMap(linebox, 'bg')
         u.WidgetWrap.__init__(self, widget)
@@ -322,10 +320,8 @@ class ProgressOverlay(u.WidgetWrap):
         self.text_widget = u.Text(initial_text, align='center')
         linebox = u.LineBox(
             u.Filler(self.text_widget),
-            tlcorner=u.LineBox.Symbols.LIGHT.TOP_LEFT_ROUNDED,
-            trcorner=u.LineBox.Symbols.LIGHT.TOP_RIGHT_ROUNDED,
-            blcorner=u.LineBox.Symbols.LIGHT.BOTTOM_LEFT_ROUNDED,
-            brcorner=u.LineBox.Symbols.LIGHT.BOTTOM_RIGHT_ROUNDED
+            tlcorner='╭', trcorner='╮',
+            blcorner='╰', brcorner='╯'
         )
         widget = u.AttrMap(linebox, 'bg')
         u.WidgetWrap.__init__(self, widget)

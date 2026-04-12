@@ -24,8 +24,13 @@ class JobInfoOverlay(u.WidgetWrap):
         # Wrap in LineBox with title showing job ID and state
         state = ' '.join(job.job_state)
         title = f"Job {job.job_id} - {state}"
-        body = u.LineBox(listbox, title=title)
-        body = u.AttrMap(body, 'jobid', 'jobid')
+        body = u.LineBox(
+            listbox,
+            title=title,
+            tlcorner='╭', trcorner='╮',
+            blcorner='╰', brcorner='╯'
+        )
+        body = u.AttrMap(body, 'normal', 'normal')
         super().__init__(body)
 
     def build_widgets(self):
@@ -67,11 +72,11 @@ class JobInfoOverlay(u.WidgetWrap):
 
         # Color-code state
         if failed:
-            widgets.append(u.AttrMap(u.Text(f"State       : {state}"), 'failed'))
+            widgets.append(u.AttrMap(u.Text(f"State       : {state}"), 'state_failed'))
         elif running:
-            widgets.append(u.AttrMap(u.Text(f"State       : {state}"), 'running'))
+            widgets.append(u.AttrMap(u.Text(f"State       : {state}"), 'state_running'))
         elif pending:
-            widgets.append(u.AttrMap(u.Text(f"State       : {state}"), 'pending'))
+            widgets.append(u.AttrMap(u.Text(f"State       : {state}"), 'state_pending'))
         else:
             widgets.append(u.Text(f"State       : {state}"))
 
@@ -91,7 +96,7 @@ class JobInfoOverlay(u.WidgetWrap):
         if ended:
             exit_code = self.format_exit_code(job)
             if failed:
-                widgets.append(u.AttrMap(u.Text(f"Exit Code   : {exit_code}"), 'failed'))
+                widgets.append(u.AttrMap(u.Text(f"Exit Code   : {exit_code}"), 'state_failed'))
             else:
                 widgets.append(u.Text(f"Exit Code   : {exit_code}"))
 
@@ -302,9 +307,19 @@ class TwoColumnJobView(u.WidgetWrap):
         entity_list = u.AttrMap(u.ScrollBar(u.ListBox(self.entity_walker)), 'bg')
 
         # Right panel: just the scrollable job list (category headers are inline)
-        self.jw = u.LineBox(u.ScrollBar(self.joblistbox), title=self.right_title_template.format(entity=""))
+        self.jw = u.LineBox(
+            u.ScrollBar(self.joblistbox),
+            title=self.right_title_template.format(entity=""),
+            tlcorner='╭', trcorner='╮',
+            blcorner='╰', brcorner='╯'
+        )
 
-        left_panel = u.LineBox(entity_list, title=self.left_title)
+        left_panel = u.LineBox(
+            entity_list,
+            title=self.left_title,
+            tlcorner='╭', trcorner='╮',
+            blcorner='╰', brcorner='╯'
+        )
         right_panel = self.jw
         self.w = u.Columns([('weight', 25, left_panel), ('weight', 75, right_panel)])
 
@@ -890,7 +905,12 @@ class ScreenViewCluster(u.WidgetWrap):
         self.listbox = u.ListBox(self.walker)
 
         # Wrap in a LineBox
-        widget = u.LineBox(u.ScrollBar(self.listbox), title="Cluster Resources")
+        widget = u.LineBox(
+            u.ScrollBar(self.listbox),
+            title="Cluster Resources",
+            tlcorner='╭', trcorner='╮',
+            blcorner='╰', brcorner='╯'
+        )
         u.WidgetWrap.__init__(self, widget)
 
         # Build initial view
@@ -1039,7 +1059,15 @@ class ConfirmExit(u.WidgetWrap):
         b = [y, n]
         buttons = u.Columns(b)
 
-        widget = u.AttrMap(u.LineBox(u.Filler(u.Pile([buttons])), title='Confirm exit?'), 'bg')
+        widget = u.AttrMap(
+            u.LineBox(
+                u.Filler(u.Pile([buttons])),
+                title='Confirm exit?',
+                tlcorner='╭', trcorner='╮',
+                blcorner='╰', brcorner='╯'
+            ),
+            'bg'
+        )
         u.WidgetWrap.__init__(self, widget)
 
     def keypress(self, size, key):

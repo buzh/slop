@@ -60,8 +60,13 @@ class SearchOverlay(u.WidgetWrap):
         filler = u.Filler(pile, valign='top')
 
         # Wrap in linebox
-        linebox = u.LineBox(filler, title="Search")
-        body = u.AttrMap(linebox, 'jobid')
+        linebox = u.LineBox(
+            filler,
+            title="Search",
+            tlcorner='╭', trcorner='╮',
+            blcorner='╰', brcorner='╯'
+        )
+        body = u.AttrMap(linebox, 'normal')
 
         super().__init__(body)
 

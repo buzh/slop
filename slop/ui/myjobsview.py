@@ -21,7 +21,7 @@ class MyJobDetailWidget(u.WidgetWrap):
         columns = self._build_columns()
 
         # Make selectable and add proper highlighting
-        widget = u.AttrMap(columns, None, 'jobid_selected')
+        widget = u.AttrMap(columns, None, 'normal_selected')
 
         super().__init__(widget)
 
@@ -263,7 +263,9 @@ class ScreenViewMyJobs(u.WidgetWrap):
         # Build UI
         self.container = u.LineBox(
             u.ScrollBar(self.job_listbox),
-            title=f"My Jobs ({self.username}) - Press 'e' to expand/collapse sections"
+            title=f"My Jobs ({self.username}) - Press 'e' to expand/collapse sections",
+            tlcorner='╭', trcorner='╮',
+            blcorner='╰', brcorner='╯'
         )
 
         body = u.AttrMap(self.container, 'bg')

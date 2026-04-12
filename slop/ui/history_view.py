@@ -55,24 +55,24 @@ class HistoryJobWidget(u.WidgetWrap):
 
         # Color code based on state and efficiency
         if state in ["FAILED", "TIMEOUT", "OUT_OF_MEMORY"]:
-            attr = 'failed'
+            attr = 'state_failed'
         elif state == "CANCELLED":
             attr = 'faded'
         elif state == "COMPLETED":
             if cpu_eff != "N/A":
                 eff_val = float(cpu_eff.rstrip('%'))
                 if eff_val >= 80:
-                    attr = 'running'  # Green for good efficiency
+                    attr = 'success'  # Green for good efficiency
                 elif eff_val >= 50:
                     attr = 'bg'  # Normal for medium
                 else:
-                    attr = 'pending'  # Yellow for low efficiency
+                    attr = 'warning'  # Yellow for low efficiency
             else:
                 attr = 'bg'
         else:
             attr = 'bg'
 
-        widget = u.AttrMap(u.Text(text), attr, 'jobid_selected')
+        widget = u.AttrMap(u.Text(text), attr, 'normal_selected')
         super().__init__(widget)
 
     def _calculate_cpu_efficiency(self, job_data):
@@ -158,7 +158,12 @@ class JobHistoryView(u.WidgetWrap):
         self.title_text = title
 
         # Wrap in linebox and scrollbar
-        widget = u.LineBox(u.ScrollBar(self.listbox), title=title)
+        widget = u.LineBox(
+            u.ScrollBar(self.listbox),
+            title=title,
+            tlcorner='╭', trcorner='╮',
+            blcorner='╰', brcorner='╯'
+        )
         widget = u.AttrMap(widget, 'bg')
 
         u.WidgetWrap.__init__(self, widget)
@@ -219,11 +224,11 @@ class JobHistoryView(u.WidgetWrap):
         self.walker.append(u.Text(f"Cancelled:  {cancelled} ({cancelled*100//total if total > 0 else 0}%)"))
         if avg_eff > 0:
             if avg_eff >= 70:
-                self.walker.append(u.AttrMap(u.Text(f"Avg CPU Eff: {avg_eff:.1f}%"), 'running'))
+                self.walker.append(u.AttrMap(u.Text(f"Avg CPU Eff: {avg_eff:.1f}%"), 'success'))
             elif avg_eff >= 50:
                 self.walker.append(u.Text(f"Avg CPU Eff: {avg_eff:.1f}%"))
             else:
-                self.walker.append(u.AttrMap(u.Text(f"Avg CPU Eff: {avg_eff:.1f}% (Consider requesting fewer cores)"), 'pending'))
+                self.walker.append(u.AttrMap(u.Text(f"Avg CPU Eff: {avg_eff:.1f}% (Consider requesting fewer cores)"), 'warning'))
         self.walker.append(u.Text(f"CPU Hours:  {total_cpu_hours:.1f}h"))
         self.walker.append(u.Divider())
 

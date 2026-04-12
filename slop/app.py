@@ -18,20 +18,29 @@ class SC(u.WidgetWrap):
 
     def __init__(self):
         palette = {
-            ("bg",               "white",       "black"),
-            ("bar",             "black",     "white"),
-            ("jobid",          "white",       "black"),
-            ("faded",          "light gray",       "black"),
-            ("jobid_selected", "black",       "yellow"),
-            ("footer",           "white, bold", "dark red"),
+            # UI Chrome
             ("header",           "white, bold", "dark blue"),
-            ("jobheader",           "white, bold", "dark cyan"),
-            ("heading",        "white",        "black"),
-            ("buttons",        "yellow",       "black"),
-            ("buttons_selected",        "white",       "dark red"),
-            ("running",        "light green",       "black"),
-            ("pending",        "yellow",       "black"),
-            ("failed",         "light red",       "black")
+            ("footer",           "white, bold", "dark red"),
+            ("jobheader",        "white, bold", "dark cyan"),
+            ("buttons",          "yellow",      "black"),
+            ("buttons_selected", "white",       "dark red"),
+
+            # Default/Background
+            ("bg",               "white",       "black"),
+            ("normal",           "white",       "black"),
+            ("normal_selected",  "black",       "yellow"),
+            ("faded",            "light gray",  "black"),
+
+            # Job States (explicit naming)
+            ("state_running",    "light green", "black"),
+            ("state_pending",    "yellow",      "black"),
+            ("state_failed",     "light red",   "black"),
+
+            # Performance/Health (separate from job states)
+            ("success",          "light green", "black"),
+            ("warning",          "yellow",      "black"),
+            ("error",            "light red",   "black"),
+            ("info",             "light cyan",  "black"),
         }
 
         # Event loop and fetchers
