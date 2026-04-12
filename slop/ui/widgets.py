@@ -34,7 +34,7 @@ class ChildJobWidget(u.WidgetWrap):
 
 class ArrayPendWidget(u.WidgetWrap):
     def __init__(self, pending):
-        widget = u.Columns([u.Text(f"  [+ {pending} tasks pending]")], dividechars=1)
+        widget = u.Columns([u.Text(f"  [+ {pending} more pending]")], dividechars=1)
         widget = u.AttrMap(widget, 'faded', 'jobid_selected')
         super().__init__(widget)
 
@@ -65,6 +65,7 @@ class UserJobListHeader(u.WidgetWrap): # Dynamic header line item for job walker
             'account': "Acct",
             'exit_code': "Exit code",
             'array_tasks': "Array",
+            'user_name': "User",
         }
 
         header = []
@@ -88,13 +89,15 @@ class UserJobListHeader(u.WidgetWrap): # Dynamic header line item for job walker
 
 
 class UserJobListWidget(u.WidgetWrap):
-    def __init__(self, job):
+    def __init__(self, job, width=None, view_type=None):
         self.job = job
         self.start_time = job.start_time.get("number", False)
         self.end_time = job.end_time["number"]
         self.time_limit = job.time_limit["number"]
         self.jobid = job.job_id
-        self.display_attr = get_display_attr(job)
+        self.width = width
+        self.view_type = view_type
+        self.display_attr = get_display_attr(job, width, view_type)
         self.is_array = job.is_array
         self.widget = self.create_widget()
         super().__init__(self.widget)
@@ -119,7 +122,7 @@ class UserJobListWidget(u.WidgetWrap):
 
                 
 
-    def get_label(self, job): ### needs to be refactored
+    def get_label(self, job):
         w = []
         for col, (align, width, wrap_mode) in self.display_attr.items():
             value = getattr(job, col, None)
@@ -179,8 +182,8 @@ class UserJobListWidget(u.WidgetWrap):
 
             wrapped_text = u.Text(t)
 
-            if wrap_mode:
-                wrapped_text.set_wrap_mode(wrap_mode)
+            # Always set a wrap mode to prevent overflow (default to 'clip' if None)
+            wrapped_text.set_wrap_mode(wrap_mode if wrap_mode else 'clip')
             w.append((align, width, wrapped_text))
 
         return w
@@ -208,6 +211,7 @@ class UserItem(u.WidgetWrap):
 
 
 class JobListDivider(u.WidgetWrap):
+    """Divider with optional centered text label."""
     def __init__(self, text=None):
         if text:
             w = u.Columns([u.Divider("-"), ('pack', u.AttrMap(u.Text(text, align='center'), 'jobheader')), u.Divider("-")], dividechars=2)
@@ -216,10 +220,76 @@ class JobListDivider(u.WidgetWrap):
         super().__init__(w)
 
 
+class ExpandableGroupMarker(u.WidgetWrap):
+    """Selectable text marker for expandable job groups."""
+    def __init__(self, text, group_key):
+        self.group_key = group_key
+        super().__init__(u.AttrMap(u.Text(text), 'faded', 'jobid_selected'))
+
+    def selectable(self):
+        return True
+
+    def keypress(self, size, key):
+        return key
+
+
 class Header(u.WidgetWrap):
-    def __init__(self):
-        header = u.AttrWrap(u.Columns([u.Text(f"Slurm Top {__version__}"), (u.Text("Q to quit", align='right'))]), 'header')
+    def __init__(self, main_screen=None):
+        self.main_screen = main_screen
+        self.text_left = u.Text(f"Slurm Top {__version__}", wrap='clip')
+        self.text_right = u.Text("", align='right', wrap='clip')
+        header = u.AttrWrap(u.Columns([self.text_left, self.text_right]), 'header')
         u.WidgetWrap.__init__(self, header)
+
+    def update(self, view_name=None):
+        """Update header with current view name."""
+        if view_name:
+            self.text_left.set_text(f"Slurm Top {__version__} - {view_name}")
+        else:
+            self.text_left.set_text(f"Slurm Top {__version__}")
+        self.text_right.set_text("q: Quit")
+
+class Footer(u.WidgetWrap):
+    def __init__(self, main_screen=None):
+        self.main_screen = main_screen
+        self.text_left = u.Text("", wrap='clip')
+        self.text_right = u.Text("", align='right', wrap='clip')
+        footer = u.AttrWrap(u.Columns([self.text_left, self.text_right]), 'footer')
+        u.WidgetWrap.__init__(self, footer)
+
+    def update(self, view_type=None, f1_label=None):
+        """Update footer with context-appropriate shortcuts.
+
+        Args:
+            view_type: Current view type ('myjobs', 'users', 'cluster', etc.)
+            f1_label: Label for F1 key (what will happen on next F1 press)
+        """
+        # Determine F1 label based on context
+        if f1_label is None:
+            if view_type == 'myjobs':
+                f1_label = "All Users"
+            elif view_type == 'users':
+                f1_label = "My Jobs"
+            else:
+                f1_label = "Jobs"
+
+        # Build shortcuts string
+        if view_type == 'cluster':
+            shortcuts = f"F1-F5: Views | /: Search | ?: Info"
+        elif view_type == 'myjobs':
+            shortcuts = f"F1-F5: Views | /: Search | ?: Info"
+        elif view_type == 'history':
+            shortcuts = f"F1-F5: Views | /: Search | Esc: Back | ?: Info"
+        elif view_type in ['users', 'accounts']:
+            shortcuts = f"F1-F5: Views | /: Search | h: History | e: Groups | ?: Info"
+        else:
+            shortcuts = f"F1-F5: Views | /: Search | e: Groups | ?: Info"
+
+        self.text_left.set_text(shortcuts)
+        if view_type in ['cluster', 'history']:
+            self.text_right.set_text("")
+        else:
+            self.text_right.set_text("0-9: Sort")
 
 
 class GenericOverlayText(u.WidgetWrap):
@@ -243,3 +313,23 @@ class GenericOverlayText(u.WidgetWrap):
         )
         widget = u.AttrMap(linebox, 'bg')
         u.WidgetWrap.__init__(self, widget)
+
+
+class ProgressOverlay(u.WidgetWrap):
+    """Overlay with updatable progress text."""
+    def __init__(self, main_screen, initial_text):
+        self.overlay_height = 10
+        self.text_widget = u.Text(initial_text, align='center')
+        linebox = u.LineBox(
+            u.Filler(self.text_widget),
+            tlcorner=u.LineBox.Symbols.LIGHT.TOP_LEFT_ROUNDED,
+            trcorner=u.LineBox.Symbols.LIGHT.TOP_RIGHT_ROUNDED,
+            blcorner=u.LineBox.Symbols.LIGHT.BOTTOM_LEFT_ROUNDED,
+            brcorner=u.LineBox.Symbols.LIGHT.BOTTOM_RIGHT_ROUNDED
+        )
+        widget = u.AttrMap(linebox, 'bg')
+        u.WidgetWrap.__init__(self, widget)
+
+    def update_text(self, text):
+        """Update the displayed text."""
+        self.text_widget.set_text(text)

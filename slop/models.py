@@ -2,6 +2,10 @@
 import urwid as u
 from slop.ui.widgets import UserJobListWidget
 from slop.slurm import *
+from slop.anonymize import (
+    anonymize_user, anonymize_account, anonymize_node,
+    anonymize_job_name, anonymize_path
+)
 
 """ a singular job """
 class Job:
@@ -9,6 +13,24 @@ class Job:
         # populate attributes dynamically from json
         for key, value in job_data.items():
             setattr(self, key, value)
+
+        # Anonymize sensitive fields if demo mode is enabled
+        if hasattr(self, 'user_name') and self.user_name:
+            self.user_name = anonymize_user(self.user_name)
+        if hasattr(self, 'account') and self.account:
+            self.account = anonymize_account(self.account)
+        if hasattr(self, 'name') and self.name:
+            self.name = anonymize_job_name(self.name)
+        if hasattr(self, 'nodes') and self.nodes and isinstance(self.nodes, str):
+            # Anonymize comma-separated node list
+            nodes = [anonymize_node(n.strip()) for n in self.nodes.split(',')]
+            self.nodes = ','.join(nodes)
+        if hasattr(self, 'working_directory') and self.working_directory:
+            self.working_directory = anonymize_path(self.working_directory)
+        if hasattr(self, 'standard_output') and self.standard_output:
+            self.standard_output = anonymize_path(self.standard_output)
+        if hasattr(self, 'standard_error') and self.standard_error:
+            self.standard_error = anonymize_path(self.standard_error)
 
         # store states as set to avoid enumerating repeatedly later
         self.states = set(self.job_state) 
@@ -39,8 +61,17 @@ class Job:
     @property
     def widget(self):
         if not hasattr(self, '_widget'):
-            self._widget = UserJobListWidget(self)
+            self._widget = UserJobListWidget(self,
+                                            width=getattr(self, '_widget_width', None),
+                                            view_type=getattr(self, '_widget_view_type', None))
         return self._widget
+
+    def set_widget_width(self, width, view_type=None):
+        """Set width and view type for widget creation and clear cache to force recreation."""
+        self._widget_width = width
+        self._widget_view_type = view_type
+        if hasattr(self, '_widget'):
+            delattr(self, '_widget')
 
     @property
     def has_running_children(self):
@@ -83,6 +114,9 @@ class Jobs:
         self.jobs = []
         self.job_index = {}
         self.usertable = None
+        self.accounttable = None
+        self.partitiontable = None
+        self.statetable = None
         self.update_slurmdata(slurm_json)
         u.register_signal(self.__class__, ['jobs_updated'])
 
@@ -106,6 +140,9 @@ class Jobs:
 
         self.link_array_jobs()
         self.make_user_table()
+        self.make_account_table()
+        self.make_partition_table()
+        self.make_state_table()
         u.emit_signal(self, 'jobs_updated')
 
     def link_array_jobs(self):
@@ -135,3 +172,93 @@ class Jobs:
                 usertable[user]['pending'] += 1
 
         self.usertable = usertable
+
+    def make_account_table(self):
+        accounttable = {}
+
+        for job in self.jobs:
+            account = job.account
+
+            if account not in accounttable:
+                accounttable[account] = {'njobs': 0, 'running': 0, 'pending': 0, 'jobs': []}
+
+            accounttable[account]['jobs'].append(job)
+
+            accounttable[account]['njobs'] += 1
+            if is_running(job):
+                accounttable[account]['running'] += 1
+            if is_pending(job):
+                accounttable[account]['pending'] += 1
+
+        self.accounttable = accounttable
+
+    def make_partition_table(self):
+        partitiontable = {}
+
+        for job in self.jobs:
+            partition = job.partition
+
+            if partition not in partitiontable:
+                partitiontable[partition] = {'njobs': 0, 'running': 0, 'pending': 0, 'jobs': []}
+
+            partitiontable[partition]['jobs'].append(job)
+
+            partitiontable[partition]['njobs'] += 1
+            if is_running(job):
+                partitiontable[partition]['running'] += 1
+            if is_pending(job):
+                partitiontable[partition]['pending'] += 1
+
+        self.partitiontable = partitiontable
+
+    def make_state_table(self):
+        statetable = {}
+
+        for job in self.jobs:
+            # job_state is a list like ['RUNNING'] or ['PENDING']
+            # Use the first state as the primary state for grouping
+            state = job.job_state[0] if job.job_state else 'UNKNOWN'
+
+            if state not in statetable:
+                statetable[state] = {'njobs': 0, 'running': 0, 'pending': 0, 'jobs': []}
+
+            statetable[state]['jobs'].append(job)
+
+            statetable[state]['njobs'] += 1
+            if is_running(job):
+                statetable[state]['running'] += 1
+            if is_pending(job):
+                statetable[state]['pending'] += 1
+
+        self.statetable = statetable
+
+    def get_user_jobs(self, username):
+        """Get all jobs for a specific user, grouped by state."""
+        user_jobs = [job for job in self.jobs if job.user_name == username]
+
+        if not user_jobs:
+            return None
+
+        # Group by state
+        grouped = {
+            'RUNNING': [],
+            'PENDING': [],
+            'COMPLETED': [],
+            'FAILED': [],
+            'OTHER': []
+        }
+
+        for job in user_jobs:
+            state = job.job_state[0] if job.job_state else 'UNKNOWN'
+            if state in ['RUNNING', 'COMPLETING']:
+                grouped['RUNNING'].append(job)
+            elif state in ['PENDING']:
+                grouped['PENDING'].append(job)
+            elif state in ['COMPLETED']:
+                grouped['COMPLETED'].append(job)
+            elif state in ['FAILED', 'TIMEOUT', 'CANCELLED', 'NODE_FAIL', 'OUT_OF_MEMORY']:
+                grouped['FAILED'].append(job)
+            else:
+                grouped['OTHER'].append(job)
+
+        return grouped

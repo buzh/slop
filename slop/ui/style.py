@@ -1,62 +1,329 @@
 from slop.slurm.state import *
 
-def get_display_attr(job):
+def get_display_attr(job, width=None, view_type=None):
+    """Get display attributes for a job based on its state, available width, and view context.
+
+    Args:
+        job: The job object
+        width: Available width in columns (None = use default/full)
+        view_type: Which view is displaying this job ('users', 'accounts', 'partitions', 'states')
+
+    Returns:
+        dict: Column configuration {field: (sizing, weight, wrap_mode)}
+    """
+    # Determine width category
+    if width is None:
+        size = 'wide'
+    elif width < 90:
+        size = 'narrow'
+    elif width < 130:
+        size = 'medium'
+    else:
+        size = 'wide'
+
+    # Determine if we should show user_name (when not in users view)
+    show_user = view_type and view_type != 'users'
+
     if job.is_array_parent:
-       return {
-           'job_id': ('weight', 5, None),
-           'array_tasks': ('weight', 4, None),
-           'submit_time': ('weight', 4, None),
-           'account': ('weight', 3, 'clip'),
-           'partition': ('weight', 4, None),
-           'name': ('weight', 5, 'clip'),
-       }
+        if size == 'narrow':
+            if show_user:
+                return {
+                    'job_id': ('weight', 5, 'clip'),
+                    'user_name': ('weight', 3, 'clip'),
+                    'array_tasks': ('weight', 4, 'clip'),
+                    'name': ('weight', 5, 'ellipsis'),
+                }
+            else:
+                return {
+                    'job_id': ('weight', 5, 'clip'),
+                    'array_tasks': ('weight', 4, 'clip'),
+                    'name': ('weight', 5, 'ellipsis'),
+                }
+        elif size == 'medium':
+            if show_user:
+                return {
+                    'job_id': ('weight', 5, 'clip'),
+                    'user_name': ('weight', 3, 'clip'),
+                    'array_tasks': ('weight', 4, 'clip'),
+                    'submit_time': ('weight', 4, 'clip'),
+                    'partition': ('weight', 4, 'clip'),
+                    'name': ('weight', 5, 'ellipsis'),
+                }
+            else:
+                return {
+                    'job_id': ('weight', 5, 'clip'),
+                    'array_tasks': ('weight', 4, 'clip'),
+                    'submit_time': ('weight', 4, 'clip'),
+                    'partition': ('weight', 4, 'clip'),
+                    'name': ('weight', 5, 'ellipsis'),
+                }
+        else:  # wide
+            if show_user:
+                return {
+                    'job_id': ('weight', 5, 'clip'),
+                    'user_name': ('weight', 3, 'clip'),
+                    'array_tasks': ('weight', 4, 'clip'),
+                    'submit_time': ('weight', 4, 'clip'),
+                    'account': ('weight', 3, 'clip'),
+                    'partition': ('weight', 4, 'clip'),
+                    'name': ('weight', 5, 'ellipsis'),
+                }
+            else:
+                return {
+                    'job_id': ('weight', 5, 'clip'),
+                    'array_tasks': ('weight', 4, 'clip'),
+                    'submit_time': ('weight', 4, 'clip'),
+                    'account': ('weight', 3, 'clip'),
+                    'partition': ('weight', 4, 'clip'),
+                    'name': ('weight', 5, 'ellipsis'),
+                }
+
     elif job.is_array_child:
-       return {
-           'job_id': ('weight', 3, None),
-           'start_time': ('weight', 4, None),
-           'end_time': ('weight', 3, None),
-           'nodes': ('weight', 3, None),
-           'tres': ('weight', 5, None),
-       }
+        if size == 'narrow':
+            return {
+                'job_id': ('weight', 3, 'clip'),
+                'start_time': ('weight', 4, 'clip'),
+                'nodes': ('weight', 3, 'clip'),
+            }
+        else:
+            return {
+                'job_id': ('weight', 3, 'clip'),
+                'start_time': ('weight', 4, 'clip'),
+                'end_time': ('weight', 3, 'clip'),
+                'nodes': ('weight', 3, 'clip'),
+                'tres': ('weight', 5, 'clip'),
+            }
 
     elif is_running(job) or job.has_running_children:
-       return {
-           'job_id': ('weight', 5, None),
-           'start_time': ('weight', 4, None),
-           'end_time': ('weight', 3, None),
-           'account': ('weight', 3, 'clip'),
-           'partition': ('weight', 4, None),
-           'name': ('weight', 5, 'clip'),
-           'nodes': ('weight', 5, None),
-       }
+        if size == 'narrow':
+            if show_user:
+                return {
+                    'job_id': ('weight', 4, 'clip'),
+                    'user_name': ('weight', 3, 'clip'),
+                    'start_time': ('weight', 4, 'clip'),
+                    'name': ('weight', 5, 'ellipsis'),
+                }
+            else:
+                return {
+                    'job_id': ('weight', 4, 'clip'),
+                    'start_time': ('weight', 4, 'clip'),
+                    'name': ('weight', 5, 'ellipsis'),
+                }
+        elif size == 'medium':
+            if show_user:
+                return {
+                    'job_id': ('weight', 5, 'clip'),
+                    'user_name': ('weight', 3, 'clip'),
+                    'start_time': ('weight', 4, 'clip'),
+                    'end_time': ('weight', 3, 'clip'),
+                    'partition': ('weight', 4, 'clip'),
+                    'name': ('weight', 5, 'ellipsis'),
+                }
+            else:
+                return {
+                    'job_id': ('weight', 5, 'clip'),
+                    'start_time': ('weight', 4, 'clip'),
+                    'end_time': ('weight', 3, 'clip'),
+                    'partition': ('weight', 4, 'clip'),
+                    'name': ('weight', 5, 'ellipsis'),
+                }
+        else:  # wide
+            if show_user:
+                return {
+                    'job_id': ('weight', 5, 'clip'),
+                    'user_name': ('weight', 3, 'clip'),
+                    'start_time': ('weight', 4, 'clip'),
+                    'end_time': ('weight', 3, 'clip'),
+                    'account': ('weight', 3, 'clip'),
+                    'partition': ('weight', 4, 'clip'),
+                    'name': ('weight', 5, 'ellipsis'),
+                    'nodes': ('weight', 5, 'clip'),
+                }
+            else:
+                return {
+                    'job_id': ('weight', 5, 'clip'),
+                    'start_time': ('weight', 4, 'clip'),
+                    'end_time': ('weight', 3, 'clip'),
+                    'account': ('weight', 3, 'clip'),
+                    'partition': ('weight', 4, 'clip'),
+                    'name': ('weight', 5, 'ellipsis'),
+                    'nodes': ('weight', 5, 'clip'),
+                }
+
     elif is_ended(job):
-        return {
-            'job_state': ('weight', 3, None),
-            'job_id': ('weight', 4, None),
-            'wall_time': ('weight', 4, None),
-            'account': ('weight', 4, None),
-            'partition': ('weight', 4, None),
-            'name': ('weight', 5, 'ellipsis'),
-            'exit_code': ('weight', 8, 'ellipsis'),
-       }
+        if size == 'narrow':
+            if show_user:
+                return {
+                    'job_state': ('weight', 2, 'clip'),
+                    'job_id': ('weight', 4, 'clip'),
+                    'user_name': ('weight', 3, 'clip'),
+                    'name': ('weight', 5, 'ellipsis'),
+                    'exit_code': ('weight', 6, 'clip'),
+                }
+            else:
+                return {
+                    'job_state': ('weight', 2, 'clip'),
+                    'job_id': ('weight', 4, 'clip'),
+                    'name': ('weight', 5, 'ellipsis'),
+                    'exit_code': ('weight', 6, 'clip'),
+                }
+        elif size == 'medium':
+            if show_user:
+                return {
+                    'job_state': ('weight', 3, 'clip'),
+                    'job_id': ('weight', 4, 'clip'),
+                    'user_name': ('weight', 3, 'clip'),
+                    'wall_time': ('weight', 4, 'clip'),
+                    'partition': ('weight', 4, 'clip'),
+                    'name': ('weight', 5, 'ellipsis'),
+                    'exit_code': ('weight', 6, 'clip'),
+                }
+            else:
+                return {
+                    'job_state': ('weight', 3, 'clip'),
+                    'job_id': ('weight', 4, 'clip'),
+                    'wall_time': ('weight', 4, 'clip'),
+                    'partition': ('weight', 4, 'clip'),
+                    'name': ('weight', 5, 'ellipsis'),
+                    'exit_code': ('weight', 6, 'clip'),
+                }
+        else:  # wide
+            if show_user:
+                return {
+                    'job_state': ('weight', 3, 'clip'),
+                    'job_id': ('weight', 4, 'clip'),
+                    'user_name': ('weight', 3, 'clip'),
+                    'wall_time': ('weight', 4, 'clip'),
+                    'account': ('weight', 4, 'clip'),
+                    'partition': ('weight', 4, 'clip'),
+                    'name': ('weight', 5, 'ellipsis'),
+                    'exit_code': ('weight', 8, 'clip'),
+                }
+            else:
+                return {
+                    'job_state': ('weight', 3, 'clip'),
+                    'job_id': ('weight', 4, 'clip'),
+                    'wall_time': ('weight', 4, 'clip'),
+                    'account': ('weight', 4, 'clip'),
+                    'partition': ('weight', 4, 'clip'),
+                    'name': ('weight', 5, 'ellipsis'),
+                    'exit_code': ('weight', 8, 'clip'),
+                }
+
     elif is_pending(job):
-        return {
-            'job_id': ('weight', 3, None),
-            'submit_time': ('weight', 3, None),
-            'wall_time': ('weight', 2, None),
-            'account': ('weight', 3, None),
-            'partition': ('weight', 3, 'ellipsis'),
-            'name': ('weight', 5, 'ellipsis'),
-            'reason': ('weight', 5, 'ellipsis'),
-       }
+        if size == 'narrow':
+            if show_user:
+                return {
+                    'job_id': ('weight', 3, 'clip'),
+                    'user_name': ('weight', 3, 'clip'),
+                    'wall_time': ('weight', 2, 'clip'),
+                    'name': ('weight', 5, 'ellipsis'),
+                    'reason': ('weight', 4, 'ellipsis'),
+                }
+            else:
+                return {
+                    'job_id': ('weight', 3, 'clip'),
+                    'wall_time': ('weight', 2, 'clip'),
+                    'name': ('weight', 5, 'ellipsis'),
+                    'reason': ('weight', 4, 'ellipsis'),
+                }
+        elif size == 'medium':
+            if show_user:
+                return {
+                    'job_id': ('weight', 3, 'clip'),
+                    'user_name': ('weight', 3, 'clip'),
+                    'submit_time': ('weight', 3, 'clip'),
+                    'wall_time': ('weight', 2, 'clip'),
+                    'partition': ('weight', 3, 'clip'),
+                    'name': ('weight', 5, 'ellipsis'),
+                    'reason': ('weight', 4, 'ellipsis'),
+                }
+            else:
+                return {
+                    'job_id': ('weight', 3, 'clip'),
+                    'submit_time': ('weight', 3, 'clip'),
+                    'wall_time': ('weight', 2, 'clip'),
+                    'partition': ('weight', 3, 'clip'),
+                    'name': ('weight', 5, 'ellipsis'),
+                    'reason': ('weight', 4, 'ellipsis'),
+                }
+        else:  # wide
+            if show_user:
+                return {
+                    'job_id': ('weight', 3, 'clip'),
+                    'user_name': ('weight', 3, 'clip'),
+                    'submit_time': ('weight', 3, 'clip'),
+                    'wall_time': ('weight', 2, 'clip'),
+                    'account': ('weight', 3, 'clip'),
+                    'partition': ('weight', 3, 'clip'),
+                    'name': ('weight', 5, 'ellipsis'),
+                    'reason': ('weight', 5, 'ellipsis'),
+                }
+            else:
+                return {
+                    'job_id': ('weight', 3, 'clip'),
+                    'submit_time': ('weight', 3, 'clip'),
+                    'wall_time': ('weight', 2, 'clip'),
+                    'account': ('weight', 3, 'clip'),
+                    'partition': ('weight', 3, 'clip'),
+                    'name': ('weight', 5, 'ellipsis'),
+                    'reason': ('weight', 5, 'ellipsis'),
+                }
+
     else:
-        return {
-            'job_state': ('given', 3, None),
-            'job_id': ('weight', 3, None),
-            'submit_time': ('weight', 3, None),
-            'wall_time': ('weight', 3, None),
-            'account': ('weight', 3, None),
-            'partition': ('weight', 3, None),
-            'name': ('weight', 5, 'ellipsis'),
-            'reason': ('weight', 5, 'ellipsis'),
-       }
+        if size == 'narrow':
+            if show_user:
+                return {
+                    'job_state': ('given', 3, 'clip'),
+                    'job_id': ('weight', 3, 'clip'),
+                    'user_name': ('weight', 3, 'clip'),
+                    'name': ('weight', 5, 'ellipsis'),
+                }
+            else:
+                return {
+                    'job_state': ('given', 3, 'clip'),
+                    'job_id': ('weight', 3, 'clip'),
+                    'name': ('weight', 5, 'ellipsis'),
+                }
+        elif size == 'medium':
+            if show_user:
+                return {
+                    'job_state': ('given', 3, 'clip'),
+                    'job_id': ('weight', 3, 'clip'),
+                    'user_name': ('weight', 3, 'clip'),
+                    'wall_time': ('weight', 3, 'clip'),
+                    'partition': ('weight', 3, 'clip'),
+                    'name': ('weight', 5, 'ellipsis'),
+                }
+            else:
+                return {
+                    'job_state': ('given', 3, 'clip'),
+                    'job_id': ('weight', 3, 'clip'),
+                    'wall_time': ('weight', 3, 'clip'),
+                    'partition': ('weight', 3, 'clip'),
+                    'name': ('weight', 5, 'ellipsis'),
+                }
+        else:  # wide
+            if show_user:
+                return {
+                    'job_state': ('given', 3, 'clip'),
+                    'job_id': ('weight', 3, 'clip'),
+                    'user_name': ('weight', 3, 'clip'),
+                    'submit_time': ('weight', 3, 'clip'),
+                    'wall_time': ('weight', 3, 'clip'),
+                    'account': ('weight', 3, 'clip'),
+                    'partition': ('weight', 3, 'clip'),
+                    'name': ('weight', 5, 'ellipsis'),
+                    'reason': ('weight', 5, 'ellipsis'),
+                }
+            else:
+                return {
+                    'job_state': ('given', 3, 'clip'),
+                    'job_id': ('weight', 3, 'clip'),
+                    'submit_time': ('weight', 3, 'clip'),
+                    'wall_time': ('weight', 3, 'clip'),
+                    'account': ('weight', 3, 'clip'),
+                    'partition': ('weight', 3, 'clip'),
+                    'name': ('weight', 5, 'ellipsis'),
+                    'reason': ('weight', 5, 'ellipsis'),
+                }

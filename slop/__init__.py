@@ -1,2 +1,2 @@
-""" slop is a top-like tool for slurm """
-__version__ = "1.0.1-beta1"
+"""slop - A top-like TUI monitor for Slurm HPC clusters."""
+__version__ = "1.1.0"

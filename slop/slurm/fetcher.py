@@ -1,25 +1,43 @@
 import subprocess
 import json
+import datetime
+import asyncio
 
 class SlurmJobFetcher:
+    """Asynchronously fetch Slurm job data using scontrol."""
+
     def __init__(self, loop=None):
         self.jobs = {"jobs": []}
         self.loop = loop or asyncio.get_event_loop()
+        self.timeout = 10
+        self.timeout_max = 120
+        self.last_fetch_duration = datetime.timedelta(0)
 
     async def get_json(self):
-        try:
-            cmd = [ "scontrol", "--json", "show", "jobs" ]
-            ret = await self.loop.run_in_executor(
-                None,
-                lambda: subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=10)
-            )
-            jobs = json.loads(ret.stdout)
+        """Fetch job JSON from scontrol with dynamic timeout handling."""
+        if self.timeout > self.timeout_max:
+            if not hasattr(self, '_max_timeout_warned'):
+                self._max_timeout_warned = True
+                print(f"Warning: scontrol timeout reached maximum ({self.timeout_max}s)")
+            return
 
-            self.jobs = jobs
+        try:
+            start = datetime.datetime.now()
+            result = await self.loop.run_in_executor(
+                None,
+                lambda: subprocess.run(
+                    ["scontrol", "--json", "show", "jobs"],
+                    check=True, capture_output=True, text=True, timeout=self.timeout
+                )
+            )
+            self.last_fetch_duration = datetime.datetime.now() - start
+            self.jobs = json.loads(result.stdout)
+
+        except subprocess.TimeoutExpired:
+            self.timeout += 5  # Increase timeout for next attempt
 
         except Exception as e:
-            print(f"Error running scontrol: {e}")
-            return None
+            print(f"Error fetching job data: {e}")
 
     def fetch_sync(self):
         return self.jobs.copy()
