@@ -214,14 +214,39 @@ class JobHistoryView(u.WidgetWrap):
 
         avg_eff = sum(efficiencies) / len(efficiencies) if efficiencies else 0
 
-        # Calculate total CPU hours
+        # Calculate total CPU hours and efficiency metrics
         total_cpu_hours = 0
+        total_cpu_hours_used = 0
+        time_efficiencies = []
+        jobs_hit_time_limit = 0
+        jobs_low_time_use = 0
+
         for job in self.jobs:
             time_info = job.get('time', {})
             elapsed = time_info.get('elapsed', 0)
             tres_alloc = {item['type']: item['count'] for item in job.get('tres', {}).get('allocated', [])}
             cpus = tres_alloc.get('cpu', 0)
+
+            # Total allocated CPU hours
             total_cpu_hours += (cpus * elapsed) / 3600
+
+            # Calculate actual CPU hours used
+            if 'COMPLETED' in job.get('state', {}).get('current', []):
+                total_time = time_info.get('total', {})
+                total_cpu_sec = total_time.get('seconds', 0) + total_time.get('microseconds', 0) / 1000000
+                total_cpu_hours_used += total_cpu_sec / 3600
+
+                # Time efficiency (elapsed vs time limit)
+                limit = job.get('time', {}).get('limit', {})
+                if limit.get('set') and not limit.get('infinite') and limit['number'] > 0 and elapsed > 0:
+                    time_eff = (elapsed / (limit['number'] * 60)) * 100
+                    time_efficiencies.append(time_eff)
+
+                    # Track patterns
+                    if time_eff > 95:
+                        jobs_hit_time_limit += 1
+                    elif time_eff < 20:
+                        jobs_low_time_use += 1
 
         # Add summary header
         self.walker.append(u.AttrMap(u.Text("SUMMARY"), 'jobheader'))
@@ -237,6 +262,8 @@ class JobHistoryView(u.WidgetWrap):
         self.walker.append(u.Text(f"Completed:  {completed} ({completed*100//total if total > 0 else 0}%)"))
         self.walker.append(u.Text(f"Failed:     {failed} ({failed*100//total if total > 0 else 0}%)"))
         self.walker.append(u.Text(f"Cancelled:  {cancelled} ({cancelled*100//total if total > 0 else 0}%)"))
+
+        # CPU efficiency
         if avg_eff > 0:
             if avg_eff >= 70:
                 self.walker.append(u.AttrMap(u.Text(f"Avg CPU Eff: {avg_eff:.1f}%"), 'success'))
@@ -244,7 +271,40 @@ class JobHistoryView(u.WidgetWrap):
                 self.walker.append(u.Text(f"Avg CPU Eff: {avg_eff:.1f}%"))
             else:
                 self.walker.append(u.AttrMap(u.Text(f"Avg CPU Eff: {avg_eff:.1f}% (Consider requesting fewer cores)"), 'warning'))
-        self.walker.append(u.Text(f"CPU Hours:  {total_cpu_hours:.1f}h"))
+
+        # CPU hours
+        wasted_cpu_hours = total_cpu_hours - total_cpu_hours_used
+        if wasted_cpu_hours > 0 and total_cpu_hours > 0:
+            waste_pct = (wasted_cpu_hours / total_cpu_hours) * 100
+            self.walker.append(u.Text(f"CPU Hours:  {total_cpu_hours:.1f}h allocated, {total_cpu_hours_used:.1f}h used"))
+            if waste_pct > 30:
+                self.walker.append(u.AttrMap(u.Text(f"  Wasted:   {wasted_cpu_hours:.1f}h ({waste_pct:.0f}%)"), 'warning'))
+            else:
+                self.walker.append(u.Text(f"  Wasted:   {wasted_cpu_hours:.1f}h ({waste_pct:.0f}%)"))
+        else:
+            self.walker.append(u.Text(f"CPU Hours:  {total_cpu_hours:.1f}h"))
+
+        # Time efficiency and patterns
+        if time_efficiencies:
+            avg_time_eff = sum(time_efficiencies) / len(time_efficiencies)
+            if avg_time_eff >= 60:
+                self.walker.append(u.AttrMap(u.Text(f"Avg Time Use: {avg_time_eff:.0f}%"), 'success'))
+            elif avg_time_eff < 30:
+                self.walker.append(u.AttrMap(u.Text(f"Avg Time Use: {avg_time_eff:.0f}% (Consider shorter time limits)"), 'warning'))
+            else:
+                self.walker.append(u.Text(f"Avg Time Use: {avg_time_eff:.0f}%"))
+
+        # Pattern warnings
+        if jobs_hit_time_limit > 0:
+            pct = (jobs_hit_time_limit / completed) * 100 if completed > 0 else 0
+            if pct > 20:
+                self.walker.append(u.AttrMap(u.Text(f"⚠ {jobs_hit_time_limit} jobs hit time limit ({pct:.0f}%)"), 'warning'))
+
+        if jobs_low_time_use > 0:
+            pct = (jobs_low_time_use / completed) * 100 if completed > 0 else 0
+            if pct > 30:
+                self.walker.append(u.AttrMap(u.Text(f"💡 {jobs_low_time_use} jobs used <20% of time limit ({pct:.0f}%)"), 'info'))
+
         self.walker.append(u.Divider())
 
         # Add column headers
