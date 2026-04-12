@@ -41,15 +41,12 @@ class SearchOverlay(u.WidgetWrap):
 
         # Build widget list
         widgets = [
-            u.Text(("jobheader", "Search Jobs")),
+            u.AttrMap(u.Text("Search Jobs"), 'jobheader'),
             u.Divider("─"),
-            u.Divider(),
             u.Text("Enter job ID, username, account, or node name:"),
-            u.Divider(),
             self.search_edit,
             u.Divider(),
             self.suggestions_text,
-            u.Divider(),
             self.status_text,
             u.Divider(),
             u.Text("Enter to search | Esc to cancel"),
@@ -71,7 +68,7 @@ class SearchOverlay(u.WidgetWrap):
         super().__init__(body)
 
         # Focus on search field by default
-        pile.focus_position = 5  # search_edit
+        pile.focus_position = 3  # search_edit
 
     def _build_knowledge_base(self):
         """Build knowledge base from current cluster state."""

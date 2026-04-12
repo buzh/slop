@@ -141,7 +141,7 @@ class JobInfoOverlay(u.WidgetWrap):
         widgets.append(u.Divider())
 
         # === RESOURCES ===
-        widgets.append(u.Text(("jobheader", "RESOURCES")))
+        widgets.append(u.AttrMap(u.Text("RESOURCES"), 'jobheader'))
         widgets.append(u.Divider("─"))
 
         # Parse TRES for better display
@@ -966,14 +966,12 @@ class ScreenViewCluster(u.WidgetWrap):
         widgets = []
 
         # === Overall cluster status ===
-        widgets.append(u.Divider())
         widgets.append(u.AttrMap(u.Text("Cluster Overview"), 'jobheader'))
         widgets.append(u.Divider("─"))
 
         # Nodes
         node_text = f"Nodes:  {overall['up_nodes']} UP, {overall['down_nodes']} DOWN (Total: {overall['total_nodes']})"
         widgets.append(u.Text(node_text))
-        widgets.append(u.Divider())
 
         # CPU
         cpu_bar = self.make_bar(overall['cpus_alloc'], overall['cpus_total'], bar_width)
