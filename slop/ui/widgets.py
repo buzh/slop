@@ -286,10 +286,10 @@ class Footer(u.WidgetWrap):
             shortcuts = f"F1-F5: Views | /: Search | e: Groups | ?: Info"
 
         self.text_left.set_text(shortcuts)
-        if view_type in ['cluster', 'history']:
+        if view_type == 'cluster':
             self.text_right.set_text("")
         else:
-            self.text_right.set_text("0-9: Sort")
+            self.text_right.set_text("0-6: Sort")
 
 
 class GenericOverlayText(u.WidgetWrap):

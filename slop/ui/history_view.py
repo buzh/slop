@@ -99,6 +99,17 @@ class HistoryJobWidget(u.WidgetWrap):
 class JobHistoryView(u.WidgetWrap):
     """View showing job history from sacct data."""
 
+    # Sort keys map number keys to sortable fields
+    SORT_KEYS = {
+        '0': 'job_id',
+        '1': 'name',
+        '2': 'state',
+        '3': 'submission',
+        '4': 'elapsed',
+        '5': 'efficiency',
+        '6': 'exit_code',
+    }
+
     def __init__(self, main_screen, history_data, search_type, search_value, weeks_loaded=None):
         """Initialize history view.
 
@@ -135,6 +146,10 @@ class JobHistoryView(u.WidgetWrap):
                 self.weeks_loaded = None
         else:
             self.weeks_loaded = weeks_loaded
+
+        # Sorting state
+        self.sort_col = 'state'  # Default sort by state
+        self.sort_reverse = False  # Ascending (COMPLETED before FAILED)
 
         # Create walker and listbox
         self.walker = u.SimpleFocusListWalker([])
@@ -235,12 +250,60 @@ class JobHistoryView(u.WidgetWrap):
         # Add column headers
         self.walker.append(u.AttrMap(u.Text("JOB LIST"), 'jobheader'))
         self.walker.append(u.Divider("─"))
-        header = "  Job ID │ Name                 │ State      │ Submitted        │    Runtime │ Eff % │ Exit"
+
+        # Build header with sort indicators
+        columns = [
+            ('0', 'job_id', 'Job ID', 8),
+            ('1', 'name', 'Name', 20),
+            ('2', 'state', 'State', 10),
+            ('3', 'submission', 'Submitted', 16),
+            ('4', 'elapsed', 'Runtime', 10),
+            ('5', 'efficiency', 'Eff %', 5),
+            ('6', 'exit_code', 'Exit', 3),
+        ]
+
+        header_parts = []
+        for key, field, label, width in columns:
+            # Add number prefix
+            col_label = f"{key}:{label}"
+            # Add sort indicator if this is the sorted column
+            if self.sort_col == field:
+                arrow = "▼" if self.sort_reverse else "▲"
+                col_label = f"{col_label}{arrow}"
+            header_parts.append(col_label.ljust(width))
+
+        header = "  " + " │ ".join(header_parts)
         self.walker.append(u.AttrMap(u.Text(header), 'jobheader'))
         self.walker.append(u.Divider("─"))
 
-        # Sort jobs by submission time (newest first)
-        sorted_jobs = sorted(self.jobs, key=lambda j: j.get('time', {}).get('submission', 0), reverse=True)
+        # Sort jobs based on current sort column
+        def get_sort_key(job):
+            if self.sort_col == 'job_id':
+                return job.get('job_id', 0)
+            elif self.sort_col == 'name':
+                return job.get('name', '').lower()
+            elif self.sort_col == 'state':
+                state = ' '.join(job.get('state', {}).get('current', ['UNKNOWN']))
+                # Order: RUNNING, PENDING, COMPLETED, FAILED, CANCELLED, OTHER
+                state_order = {'RUNNING': 0, 'PENDING': 1, 'COMPLETED': 2, 'FAILED': 3,
+                              'TIMEOUT': 4, 'OUT_OF_MEMORY': 5, 'CANCELLED': 6}
+                return state_order.get(state, 99)
+            elif self.sort_col == 'submission':
+                return job.get('time', {}).get('submission', 0)
+            elif self.sort_col == 'elapsed':
+                return job.get('time', {}).get('elapsed', 0)
+            elif self.sort_col == 'efficiency':
+                # Calculate efficiency for sorting
+                eff_str = HistoryJobWidget(job)._calculate_cpu_efficiency(job)
+                if eff_str == "N/A":
+                    return -1  # Sort N/A to end
+                return float(eff_str.rstrip('%'))
+            elif self.sort_col == 'exit_code':
+                return job.get('derived_exit_code', {}).get('return_code', {}).get('number', 0)
+            else:
+                return 0
+
+        sorted_jobs = sorted(self.jobs, key=get_sort_key, reverse=self.sort_reverse)
 
         # Add job widgets
         for job in sorted_jobs:
@@ -265,6 +328,25 @@ class JobHistoryView(u.WidgetWrap):
             if hasattr(focus_w, 'jobid') and hasattr(focus_w, 'job_data'):
                 detail_overlay = JobDetailSacct(focus_w.job_data, self.main_screen)
                 self.main_screen.open_overlay(detail_overlay)
+            return None
+
+        # Number keys: sort by column
+        if key in self.SORT_KEYS:
+            selected_col = self.SORT_KEYS[key]
+            if self.sort_col == selected_col:
+                # Toggle sort direction if already sorting by this column
+                self.sort_reverse = not self.sort_reverse
+            else:
+                # New column - set default direction
+                self.sort_col = selected_col
+                # Default directions for different columns
+                if selected_col in ['submission', 'job_id']:
+                    self.sort_reverse = True  # Newest/highest first
+                elif selected_col in ['efficiency', 'elapsed']:
+                    self.sort_reverse = True  # Highest first
+                else:
+                    self.sort_reverse = False  # Ascending
+            self.update()
             return None
 
         return super().keypress(size, key)
