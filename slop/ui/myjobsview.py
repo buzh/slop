@@ -363,6 +363,13 @@ class ScreenViewMyJobs(u.WidgetWrap):
         else:
             self.job_walker.append(u.Text(("faded", "  No jobs to display")))
 
+        # Set focus to first selectable item
+        if len(self.job_walker) > 0:
+            for i, widget in enumerate(self.job_walker):
+                if widget.selectable():
+                    self.job_walker.set_focus(i)
+                    break
+
     def keypress(self, size, key):
         if self.main_screen.overlay_showing:
             return key

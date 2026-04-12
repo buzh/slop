@@ -246,6 +246,13 @@ class JobHistoryView(u.WidgetWrap):
         for job in sorted_jobs:
             self.walker.append(HistoryJobWidget(job))
 
+        # Set focus to first selectable item
+        if len(self.walker) > 0:
+            for i, widget in enumerate(self.walker):
+                if widget.selectable():
+                    self.walker.set_focus(i)
+                    break
+
     def keypress(self, size, key):
         if key == 'esc' or key == 'q':
             # Go back to main view
