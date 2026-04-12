@@ -363,12 +363,9 @@ class ScreenViewMyJobs(u.WidgetWrap):
         else:
             self.job_walker.append(u.Text(("faded", "  No jobs to display")))
 
-        # Set focus to first selectable item
+        # Set focus to top of list (urwid will skip to first selectable on arrow press)
         if len(self.job_walker) > 0:
-            for i, widget in enumerate(self.job_walker):
-                if widget.selectable():
-                    self.job_walker.set_focus(i)
-                    break
+            self.job_walker.set_focus(0)
 
     def keypress(self, size, key):
         if self.main_screen.overlay_showing:

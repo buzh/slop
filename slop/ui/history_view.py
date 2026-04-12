@@ -309,12 +309,9 @@ class JobHistoryView(u.WidgetWrap):
         for job in sorted_jobs:
             self.walker.append(HistoryJobWidget(job))
 
-        # Set focus to first selectable item
+        # Set focus to top of list (urwid will skip to first selectable on arrow press)
         if len(self.walker) > 0:
-            for i, widget in enumerate(self.walker):
-                if widget.selectable():
-                    self.walker.set_focus(i)
-                    break
+            self.walker.set_focus(0)
 
     def keypress(self, size, key):
         if key == 'esc' or key == 'q':
