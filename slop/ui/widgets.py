@@ -253,8 +253,10 @@ class Footer(u.WidgetWrap):
     def __init__(self, main_screen=None):
         self.main_screen = main_screen
         self.text_left = u.Text("", wrap='clip')
+        self.text_center = u.Text("", align='center', wrap='clip')
         self.text_right = u.Text("", align='right', wrap='clip')
-        footer = u.AttrWrap(u.Columns([self.text_left, self.text_right]), 'footer')
+        # Three-column layout for better space utilization
+        footer = u.AttrWrap(u.Columns([self.text_left, self.text_center, self.text_right]), 'footer')
         u.WidgetWrap.__init__(self, footer)
 
     def update(self, view_type=None, f1_label=None):
@@ -264,32 +266,101 @@ class Footer(u.WidgetWrap):
             view_type: Current view type ('myjobs', 'users', 'cluster', etc.)
             f1_label: Label for F1 key (what will happen on next F1 press)
         """
-        # Determine F1 label based on context
-        if f1_label is None:
-            if view_type == 'myjobs':
-                f1_label = "All Users"
-            elif view_type == 'users':
-                f1_label = "My Jobs"
-            else:
-                f1_label = "Jobs"
+        # Get screen width for responsive content
+        screen_width = getattr(self.main_screen, 'width', 120)
 
-        # Build shortcuts string
-        if view_type == 'cluster':
-            shortcuts = f"F1-F5: Views | /: Search | ?: Info"
+        # Build shortcuts based on screen width and view type
+        if screen_width < 90:
+            # Narrow: Very compact
+            shortcuts = self._build_narrow_shortcuts(view_type)
+        elif screen_width < 140:
+            # Medium: Balanced
+            shortcuts = self._build_medium_shortcuts(view_type)
+        else:
+            # Wide: Full descriptions
+            shortcuts = self._build_wide_shortcuts(view_type)
+
+        self.text_left.set_text(shortcuts['left'])
+        self.text_center.set_text(shortcuts.get('center', ''))
+        self.text_right.set_text(shortcuts.get('right', ''))
+
+    def _build_narrow_shortcuts(self, view_type):
+        """Minimal shortcuts for narrow screens (<90 cols)."""
+        left_parts = ["F1-5:Views", "/:Search"]
+
+        if view_type == 'history':
+            left_parts.append("Esc:Back")
+        elif view_type in ['users', 'accounts', 'partitions', 'states']:
+            left_parts.append("h:Hist")
+            left_parts.append("e:Grp")
         elif view_type == 'myjobs':
-            shortcuts = f"F1-F5: Views | /: Search | ?: Info"
-        elif view_type == 'history':
-            shortcuts = f"F1-F5: Views | /: Search | Esc: Back | ?: Info"
-        elif view_type in ['users', 'accounts']:
-            shortcuts = f"F1-F5: Views | /: Search | h: History | e: Groups | ?: Info"
-        else:
-            shortcuts = f"F1-F5: Views | /: Search | e: Groups | ?: Info"
+            left_parts.append("e:Expand")
 
-        self.text_left.set_text(shortcuts)
-        if view_type == 'cluster':
-            self.text_right.set_text("")
-        else:
-            self.text_right.set_text("0-6: Sort")
+        left_parts.append("?:Help")
+
+        right = ""
+        if view_type != 'cluster':
+            right = "0-6:Sort"
+
+        return {'left': ' '.join(left_parts), 'right': right}
+
+    def _build_medium_shortcuts(self, view_type):
+        """Moderate detail for medium screens (90-140 cols)."""
+        left_parts = ["F1-F5: Views", "/: Search"]
+
+        center = ""
+        if view_type == 'history':
+            center = "Enter: Details | Esc: Back"
+        elif view_type in ['users', 'accounts', 'partitions', 'states']:
+            center = "h: History | e: Groups | Enter: Details"
+        elif view_type == 'myjobs':
+            center = "e: Expand/Collapse | Enter: Details"
+        elif view_type == 'cluster':
+            center = "Arrows: Scroll"
+
+        left_parts.append("?: Info")
+
+        right = ""
+        if view_type != 'cluster':
+            right = "0-6: Sort"
+
+        return {'left': ' | '.join(left_parts), 'center': center, 'right': right}
+
+    def _build_wide_shortcuts(self, view_type):
+        """Full descriptions for wide screens (>140 cols)."""
+        # Left: Navigation
+        left_parts = [
+            "F1: My Jobs/Users",
+            "F2: Accounts",
+            "F3: Partitions",
+            "F4: States",
+            "F5: Cluster"
+        ]
+
+        # Center: View-specific actions
+        center_parts = []
+        if view_type == 'history':
+            center_parts = ["/: Search", "Enter: Job Details", "Esc: Back to Jobs", "?: App Info"]
+        elif view_type in ['users', 'accounts']:
+            center_parts = ["/: Search", "h: User History", "e: Expand Groups", "Enter: Job Details", "?: Info"]
+        elif view_type in ['partitions', 'states']:
+            center_parts = ["/: Search", "e: Expand Groups", "Enter: Job Details", "?: Info"]
+        elif view_type == 'myjobs':
+            center_parts = ["/: Search", "e: Expand/Collapse Sections", "Enter: Job Details", "?: Info"]
+        elif view_type == 'cluster':
+            center_parts = ["/: Search", "Arrows: Scroll", "?: App Info"]
+
+        # Right: Sorting/Exit
+        right_parts = []
+        if view_type != 'cluster':
+            right_parts.append("0-6: Sort Columns")
+        right_parts.append("q: Quit")
+
+        return {
+            'left': ' | '.join(left_parts),
+            'center': ' | '.join(center_parts),
+            'right': ' | '.join(right_parts)
+        }
 
 
 class GenericOverlayText(u.WidgetWrap):

@@ -277,9 +277,12 @@ class JobHistoryView(u.WidgetWrap):
                     elif time_eff < 20:
                         jobs_low_time_use += 1
 
-        # Add summary header
-        self.walker.append(u.AttrMap(u.Text("SUMMARY"), 'jobheader'))
-        self.walker.append(u.Divider("─"))
+        # Add summary section with prominent header
+        # Calculate separator width based on screen
+        separator_width = getattr(self.main_screen, 'width', 120) - 5
+        summary_sep = "═" * max(separator_width - 13, 20)  # Account for "═══ SUMMARY "
+        summary_header = f"═══ SUMMARY {summary_sep}"
+        self.walker.append(u.AttrMap(u.Text(summary_header), 'jobheader'))
         self.walker.append(u.Text(f"Total Jobs: {total}"))
 
         # Show cache stats if available
@@ -334,13 +337,30 @@ class JobHistoryView(u.WidgetWrap):
             if pct > 30:
                 self.walker.append(u.AttrMap(u.Text(f"💡 {jobs_low_time_use} jobs used <20% of time limit ({pct:.0f}%)"), 'info'))
 
+        # Visual separator between sections
         self.walker.append(u.Divider())
 
-        # Add column headers
-        self.walker.append(u.AttrMap(u.Text("JOB LIST"), 'jobheader'))
-        self.walker.append(u.Divider("─"))
+        # Build job list section with integrated column headers
+        # Sort indicator in section title
+        sort_labels = {
+            'job_id': 'Job ID',
+            'name': 'Name',
+            'state': 'State',
+            'submission': 'Submitted',
+            'elapsed': 'Runtime',
+            'efficiency': 'Efficiency',
+            'exit_code': 'Exit Code'
+        }
+        arrow = "▼" if self.sort_reverse else "▲"
+        sort_info = f"sorted by {sort_labels.get(self.sort_col, self.sort_col)} {arrow}"
 
-        # Build header with sort indicators (use dynamic name width)
+        # Section header with separator - calculate remaining width
+        header_text = f"═══ JOB LIST ({sort_info}) "
+        remaining_width = max(separator_width - len(header_text), 0)
+        section_header = header_text + "═" * remaining_width
+        self.walker.append(u.AttrMap(u.Text(section_header), 'jobheader'))
+
+        # Column headers directly below section header
         columns = [
             ('0', 'job_id', 'Job ID', 8),
             ('1', 'name', 'Name', self.name_width),
@@ -353,16 +373,14 @@ class JobHistoryView(u.WidgetWrap):
 
         header_parts = []
         for key, field, label, width in columns:
-            # Add number prefix
             col_label = f"{key}:{label}"
-            # Add sort indicator if this is the sorted column
+            # Subtle indicator if this is the sort column
             if self.sort_col == field:
-                arrow = "▼" if self.sort_reverse else "▲"
-                col_label = f"{col_label}{arrow}"
-            header_parts.append(col_label.ljust(width))
+                col_label = f"[{col_label}]"
+            header_parts.append(col_label.ljust(width + (2 if self.sort_col == field else 0)))
 
         header = "  " + " │ ".join(header_parts)
-        self.walker.append(u.AttrMap(u.Text(header), 'jobheader'))
+        self.walker.append(u.Text(('faded', header)))
         self.walker.append(u.Divider("─"))
 
         # Sort jobs based on current sort column

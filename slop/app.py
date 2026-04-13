@@ -187,6 +187,11 @@ Current scontrol duration: {fetch_duration:.1f}s"""
         if 0 <= self.current_view < len(screens):
             screens[self.current_view].on_resize()
 
+        # Update footer to adapt to new width
+        footer_types = ['myjobs', 'users', 'accounts', 'partitions', 'states', 'cluster']
+        if 0 <= self.current_view < len(footer_types):
+            self.footer.update(footer_types[self.current_view], f1_label=self.get_f1_label())
+
         self.loop.draw_screen()
 
     def get_f1_label(self):
