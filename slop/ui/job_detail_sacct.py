@@ -2,7 +2,7 @@
 
 import urwid as u
 import datetime
-from slop.utils import format_duration
+from slop.utils import format_duration, smart_truncate
 
 
 class JobDetailSacct(u.WidgetWrap):
@@ -13,16 +13,25 @@ class JobDetailSacct(u.WidgetWrap):
 
         Args:
             sacct_job: Job data from sacct JSON
-            main_screen: Main screen instance (for height calculation)
+            main_screen: Main screen instance (for height and width calculation)
         """
         self.sacct_job = sacct_job
-        widgets = self.build_widgets()
+        self.main_screen = main_screen
 
-        # Calculate height based on screen size
+        # Calculate dimensions based on screen size
         if main_screen and hasattr(main_screen, 'height'):
             self.height = max(main_screen.height - 8, 20)
         else:
             self.height = 35
+
+        # Calculate usable width for text content
+        # Account for LineBox borders (2) + padding + label width (~14 chars)
+        if main_screen and hasattr(main_screen, 'width'):
+            self.content_width = max(main_screen.width - 20, 50)
+        else:
+            self.content_width = 70
+
+        widgets = self.build_widgets()
 
         # Create scrollable listbox
         walker = u.SimpleFocusListWalker(widgets)
@@ -44,6 +53,9 @@ class JobDetailSacct(u.WidgetWrap):
         """Build the overlay widgets with sections."""
         job = self.sacct_job
         widgets = []
+
+        # Effective width for values (content_width minus label)
+        value_width = self.content_width - 14
 
         # === BASIC INFO ===
         widgets.append(u.AttrMap(u.Text("BASIC INFO"), 'jobheader'))
@@ -170,10 +182,15 @@ class JobDetailSacct(u.WidgetWrap):
             widgets.append(u.AttrMap(u.Text(f"JOB STEPS ({len(steps)} steps)"), 'jobheader'))
             widgets.append(u.Divider("─"))
 
+            # Calculate step name width (wider screens can show longer step names)
+            step_name_width = min(max(self.content_width // 6, 10), 20)
+
             for step in steps:
                 step_info = step.get('step', {})
                 step_id = step_info.get('id', 'N/A')
-                step_name = step_info.get('name', 'N/A')
+                step_name_raw = step_info.get('name', 'N/A')
+                # Smart truncate step name - preserve both start and end
+                step_name = smart_truncate(step_name_raw, step_name_width, mode='middle')
                 step_state = ' '.join(step.get('state', []))
 
                 step_time = step.get('time', {})
@@ -182,7 +199,7 @@ class JobDetailSacct(u.WidgetWrap):
                 step_exit = step.get('exit_code', {})
                 step_exit_code = step_exit.get('return_code', {}).get('number', 'N/A')
 
-                step_line = f"  {step_name:10s} | {step_state:10s} | {format_duration(step_elapsed):>10s} | Exit: {step_exit_code}"
+                step_line = f"  {step_name:{step_name_width}s} | {step_state:10s} | {format_duration(step_elapsed):>10s} | Exit: {step_exit_code}"
 
                 if step_state == 'FAILED':
                     widgets.append(u.AttrMap(u.Text(step_line), 'error'))
@@ -216,13 +233,13 @@ class JobDetailSacct(u.WidgetWrap):
         stdout = job.get('stdout', 'N/A')
         stderr = job.get('stderr', 'N/A')
 
-        # Truncate long paths
-        if len(work_dir) > 70:
-            work_dir = "..." + work_dir[-67:]
-        if len(stdout) > 70:
-            stdout = "..." + stdout[-67:]
-        if len(stderr) > 70:
-            stderr = "..." + stderr[-67:]
+        # Truncate long paths based on available width
+        if len(work_dir) > value_width:
+            work_dir = "..." + work_dir[-(value_width-3):]
+        if len(stdout) > value_width:
+            stdout = "..." + stdout[-(value_width-3):]
+        if len(stderr) > value_width:
+            stderr = "..." + stderr[-(value_width-3):]
 
         widgets.append(u.Text(f"Work Dir    : {work_dir}"))
         widgets.append(u.Text(f"Stdout      : {stdout}"))
@@ -235,11 +252,11 @@ class JobDetailSacct(u.WidgetWrap):
             widgets.append(u.Divider())
             widgets.append(u.AttrMap(u.Text("SUBMIT COMMAND"), 'jobheader'))
             widgets.append(u.Divider("─"))
-            # Wrap long command
-            if len(submit_line) > 75:
+            # Wrap long command based on available width
+            if len(submit_line) > self.content_width:
                 parts = []
-                for i in range(0, len(submit_line), 75):
-                    parts.append(submit_line[i:i+75])
+                for i in range(0, len(submit_line), self.content_width):
+                    parts.append(submit_line[i:i+self.content_width])
                 for part in parts:
                     widgets.append(u.Text(part))
             else:

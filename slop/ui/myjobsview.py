@@ -7,6 +7,7 @@ from slop.slurm import *
 from slop.utils import *
 from slop.ui.widgets import *
 from slop.ui.views import JobInfoOverlay
+from slop.utils import smart_truncate
 
 
 class MyJobDetailWidget(u.WidgetWrap):
@@ -34,10 +35,8 @@ class MyJobDetailWidget(u.WidgetWrap):
         return key
 
     def _truncate(self, text, max_len):
-        """Truncate text with ellipsis if needed."""
-        if len(text) <= max_len:
-            return text
-        return text[:max_len-1] + '…'
+        """Truncate text with ellipsis preserving both start and end."""
+        return smart_truncate(text, max_len, mode='middle')
 
     def _build_columns(self):
         """Build aligned columns for the job."""
@@ -234,7 +233,7 @@ class MyJobDetailWidget(u.WidgetWrap):
             'ReqNodeNotAvail': 'NodeN/A',
             'AssocMaxJobsLimit': 'JobLim',
         }
-        return abbrev.get(reason, reason[:10] if len(reason) > 10 else reason)
+        return abbrev.get(reason, smart_truncate(reason, 10, mode='middle'))
 
 
 class ScreenViewMyJobs(u.WidgetWrap):

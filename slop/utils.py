@@ -75,3 +75,53 @@ def format_duration(seconds): # turns seconds into 1d2h3m4s
     except Exception:
         return "N/A"
 
+
+def smart_truncate(text, max_len, mode='middle', ellipsis='…'):
+    """Intelligently truncate text preserving important parts.
+
+    Args:
+        text: String to truncate
+        max_len: Maximum length including ellipsis
+        mode: 'middle' (default), 'start', or 'end'
+            - 'middle': "begin…end" - preserves both start and end (best for names with versions)
+            - 'start': "…end" - preserves end (best for file paths)
+            - 'end': "begin…" - preserves start (best for prefixes)
+        ellipsis: Character(s) to use for truncation indicator
+
+    Returns:
+        Truncated string
+
+    Examples:
+        >>> smart_truncate("nvidia_a100_80gb", 12, 'middle')
+        'nvid…80gb'
+        >>> smart_truncate("/very/long/path/file.txt", 20, 'start')
+        '…path/file.txt'
+        >>> smart_truncate("long_prefix_name", 12, 'end')
+        'long_prefix…'
+    """
+    if len(text) <= max_len:
+        return text
+
+    if max_len < len(ellipsis) + 2:
+        # Too short to do anything meaningful
+        return text[:max_len]
+
+    if mode == 'start':
+        # Keep the end (e.g., for file paths)
+        keep_len = max_len - len(ellipsis)
+        return ellipsis + text[-keep_len:]
+
+    elif mode == 'end':
+        # Keep the beginning
+        keep_len = max_len - len(ellipsis)
+        return text[:keep_len] + ellipsis
+
+    else:  # mode == 'middle'
+        # Keep both start and end
+        # Reserve space for ellipsis and split remaining space
+        available = max_len - len(ellipsis)
+        # Favor the end slightly (often has version numbers)
+        start_len = available // 2
+        end_len = available - start_len
+        return text[:start_len] + ellipsis + text[-end_len:]
+

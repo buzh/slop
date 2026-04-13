@@ -9,13 +9,21 @@ from slop.ui.widgets import *
 class JobInfoOverlay(u.WidgetWrap):
     def __init__(self, job, main_screen=None):
         self.job = job
-        widgets = self.build_widgets()
+        self.main_screen = main_screen
 
-        # Calculate height based on screen size
+        # Calculate dimensions based on screen size
         if main_screen and hasattr(main_screen, 'height'):
             self.height = max(main_screen.height - 8, 15)
         else:
             self.height = 30  # Reasonable default
+
+        # Calculate usable width for text content
+        if main_screen and hasattr(main_screen, 'width'):
+            self.content_width = max(main_screen.width - 20, 50)
+        else:
+            self.content_width = 60
+
+        widgets = self.build_widgets()
 
         # Create scrollable listbox
         walker = u.SimpleFocusListWalker(widgets)
@@ -87,9 +95,10 @@ class JobInfoOverlay(u.WidgetWrap):
             # Show explanation from reasons dict if available
             if state_reason in reasons:
                 explanation = reasons[state_reason]
-                # Wrap long explanations
-                if len(explanation) > 60:
-                    explanation = explanation[:57] + "..."
+                # Wrap long explanations based on available width
+                max_explanation_width = self.content_width - 14  # Account for indentation
+                if len(explanation) > max_explanation_width:
+                    explanation = explanation[:max_explanation_width-3] + "..."
                 widgets.append(u.Text(f"              {explanation}"))
 
         # Exit code for ended jobs
@@ -958,9 +967,20 @@ class ScreenViewCluster(u.WidgetWrap):
         overall = cluster.get_overall_stats()
         gpu_stats = cluster.get_gpu_stats()
 
-        # Calculate bar width based on available screen width
+        # Calculate bar width and column widths based on available screen width
         available_width = self.main_screen.width - 10 if hasattr(self.main_screen, 'width') else 100
         bar_width = min(max(available_width - 50, 20), 60)
+
+        # Adaptive column widths for GPU/node names (wider screens = more space for names)
+        if available_width > 120:
+            gpu_name_width = 20
+            node_name_width = 16
+        elif available_width > 100:
+            gpu_name_width = 16
+            node_name_width = 12
+        else:
+            gpu_name_width = 12
+            node_name_width = 10
 
         # Build widgets
         widgets = []
@@ -995,9 +1015,9 @@ class ScreenViewCluster(u.WidgetWrap):
             for gpu_type in sorted(gpu_stats.keys()):
                 stats = gpu_stats[gpu_type]
                 gpu_bar = self.make_bar(stats['used'], stats['total'], bar_width)
-                # Truncate long GPU names to 16 chars max, left-aligned
-                gpu_name = gpu_type.upper()[:16]
-                gpu_text = f"{gpu_name:16s} [{gpu_bar}] {stats['used']}/{stats['total']} GPUs ({stats['util']:.1f}%)"
+                # Smart truncate GPU names - preserve both model and memory size
+                gpu_name = smart_truncate(gpu_type.upper(), gpu_name_width, mode='middle')
+                gpu_text = f"{gpu_name:{gpu_name_width}s} [{gpu_bar}] {stats['used']}/{stats['total']} GPUs ({stats['util']:.1f}%)"
                 widgets.append(u.Text(gpu_text))
 
         # === GPU nodes detail ===
@@ -1016,9 +1036,10 @@ class ScreenViewCluster(u.WidgetWrap):
                     state = "MIXED" if gpu.used > 0 and gpu.free > 0 else "IDLE" if gpu.used == 0 else "FULL"
                     state_str = node.state[0] if node.state else "UNKNOWN"
 
-                    # Node line - truncate GPU type to 16 chars max
-                    gpu_name = gpu.gpu_type[:16]
-                    node_line = f"{node.name:12s} {gpu_name:16s} [{node_bar}] {gpu.used}/{gpu.total} ({state:5s}) State: {state_str}"
+                    # Smart truncate names - preserve identifying prefix and suffix
+                    node_name_trunc = smart_truncate(node.name, node_name_width, mode='middle')
+                    gpu_name = smart_truncate(gpu.gpu_type, gpu_name_width, mode='middle')
+                    node_line = f"{node_name_trunc:{node_name_width}s} {gpu_name:{gpu_name_width}s} [{node_bar}] {gpu.used}/{gpu.total} ({state:5s}) State: {state_str}"
                     widgets.append(u.Text(node_line))
 
                     # Show indices if GPUs are in use

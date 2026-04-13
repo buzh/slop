@@ -2,20 +2,23 @@
 
 import urwid as u
 import datetime
-from slop.utils import format_duration
+from slop.utils import format_duration, smart_truncate
 from slop.ui.job_detail_sacct import JobDetailSacct
 
 
 class HistoryJobWidget(u.WidgetWrap):
     """Widget for displaying a single history job in the list."""
 
-    def __init__(self, job_data):
+    def __init__(self, job_data, name_width=20):
         self.job_data = job_data
         self.jobid = job_data.get('job_id')
+        self.name_width = name_width
 
         # Extract data
         job_id = job_data.get('job_id', 'N/A')
-        name = job_data.get('name', 'N/A')[:20]  # Truncate long names
+        name_raw = job_data.get('name', 'N/A')
+        # Smart truncate - preserve both start and end of job name
+        name = smart_truncate(name_raw, name_width, mode='middle')
         state_info = job_data.get('state', {})
         state = ' '.join(state_info.get('current', ['UNKNOWN']))[:10]
 
@@ -51,7 +54,7 @@ class HistoryJobWidget(u.WidgetWrap):
         exit_code = exit_code_info.get('return_code', {}).get('number', '?')
 
         # Build display text
-        text = f"{str(job_id):>8s} │ {name:20s} │ {state:10s} │ {date_str:16s} │ {runtime_str:>10s} │ {cpu_eff:>5s} │ {str(exit_code):>3s}"
+        text = f"{str(job_id):>8s} │ {name:<{self.name_width}s} │ {state:10s} │ {date_str:16s} │ {runtime_str:>10s} │ {cpu_eff:>5s} │ {str(exit_code):>3s}"
 
         # Color code based on state and efficiency
         if state in ["FAILED", "TIMEOUT", "OUT_OF_MEMORY"]:
@@ -75,7 +78,8 @@ class HistoryJobWidget(u.WidgetWrap):
         widget = u.AttrMap(u.Text(text), attr, 'normal_selected')
         super().__init__(widget)
 
-    def _calculate_cpu_efficiency(self, job_data):
+    @staticmethod
+    def _calculate_cpu_efficiency(job_data):
         """Calculate CPU efficiency percentage."""
         time_info = job_data.get('time', {})
         elapsed = time_info.get('elapsed', 0)
@@ -151,6 +155,9 @@ class JobHistoryView(u.WidgetWrap):
         self.sort_col = 'state'  # Default sort by state
         self.sort_reverse = False  # Ascending (COMPLETED before FAILED)
 
+        # Calculate column widths based on screen size
+        self.calculate_column_widths()
+
         # Create walker and listbox
         self.walker = u.SimpleFocusListWalker([])
         self.listbox = u.ListBox(self.walker)
@@ -186,8 +193,30 @@ class JobHistoryView(u.WidgetWrap):
         # Build the view
         self.update()
 
+    def calculate_column_widths(self):
+        """Calculate responsive column widths based on screen size."""
+        # Get available width (total screen minus LineBox borders and scrollbar)
+        available_width = getattr(self.main_screen, 'width', 120) - 5
+
+        # Fixed columns that don't change size
+        # Format: job_id(8) + sep(3) + state(10) + sep(3) + submitted(16) + sep(3) + runtime(10) + sep(3) + eff(5) + sep(3) + exit(3)
+        # = 8 + 3 + 10 + 3 + 16 + 3 + 10 + 3 + 5 + 3 + 3 = 67
+        # Plus "  " prefix = 69 total fixed
+        fixed_width = 69
+
+        # Remaining width goes to name column
+        self.name_width = max(available_width - fixed_width, 15)  # Minimum 15 chars
+
+        # Cap at reasonable maximum to avoid overly wide columns
+        self.name_width = min(self.name_width, 40)
+
     def is_active(self):
         return self.main_screen.frame.body.base_widget is self
+
+    def on_resize(self):
+        """Handle window resize - recalculate column widths and redraw."""
+        self.calculate_column_widths()
+        self.update()
 
     def update(self):
         """Build/rebuild the job list."""
@@ -208,7 +237,7 @@ class JobHistoryView(u.WidgetWrap):
         efficiencies = []
         for job in self.jobs:
             if 'COMPLETED' in job.get('state', {}).get('current', []):
-                eff_str = HistoryJobWidget(job)._calculate_cpu_efficiency(job)
+                eff_str = HistoryJobWidget._calculate_cpu_efficiency(job)
                 if eff_str != "N/A":
                     efficiencies.append(float(eff_str.rstrip('%')))
 
@@ -311,10 +340,10 @@ class JobHistoryView(u.WidgetWrap):
         self.walker.append(u.AttrMap(u.Text("JOB LIST"), 'jobheader'))
         self.walker.append(u.Divider("─"))
 
-        # Build header with sort indicators
+        # Build header with sort indicators (use dynamic name width)
         columns = [
             ('0', 'job_id', 'Job ID', 8),
-            ('1', 'name', 'Name', 20),
+            ('1', 'name', 'Name', self.name_width),
             ('2', 'state', 'State', 10),
             ('3', 'submission', 'Submitted', 16),
             ('4', 'elapsed', 'Runtime', 10),
@@ -354,7 +383,7 @@ class JobHistoryView(u.WidgetWrap):
                 return job.get('time', {}).get('elapsed', 0)
             elif self.sort_col == 'efficiency':
                 # Calculate efficiency for sorting
-                eff_str = HistoryJobWidget(job)._calculate_cpu_efficiency(job)
+                eff_str = HistoryJobWidget._calculate_cpu_efficiency(job)
                 if eff_str == "N/A":
                     return -1  # Sort N/A to end
                 return float(eff_str.rstrip('%'))
@@ -367,7 +396,7 @@ class JobHistoryView(u.WidgetWrap):
 
         # Add job widgets
         for job in sorted_jobs:
-            self.walker.append(HistoryJobWidget(job))
+            self.walker.append(HistoryJobWidget(job, name_width=self.name_width))
 
         # Set focus to top of list (urwid will skip to first selectable on arrow press)
         if len(self.walker) > 0:
