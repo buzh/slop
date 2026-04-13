@@ -299,7 +299,9 @@ class Footer(u.WidgetWrap):
         left_parts.append("?:Help")
 
         right = ""
-        if view_type != 'cluster':
+        if view_type == 'history':
+            right = "0-7:Sort"
+        elif view_type != 'cluster':
             right = "0-6:Sort"
 
         return {'left': ' '.join(left_parts), 'right': right}
@@ -321,7 +323,9 @@ class Footer(u.WidgetWrap):
         left_parts.append("?: Info")
 
         right = ""
-        if view_type != 'cluster':
+        if view_type == 'history':
+            right = "0-7: Sort"
+        elif view_type != 'cluster':
             right = "0-6: Sort"
 
         return {'left': ' | '.join(left_parts), 'center': center, 'right': right}
@@ -352,7 +356,9 @@ class Footer(u.WidgetWrap):
 
         # Right: Sorting/Exit
         right_parts = []
-        if view_type != 'cluster':
+        if view_type == 'history':
+            right_parts.append("0-7: Sort Columns")
+        elif view_type != 'cluster':
             right_parts.append("0-6: Sort Columns")
         right_parts.append("q: Quit")
 

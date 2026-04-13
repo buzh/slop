@@ -29,32 +29,40 @@ class HistoryJobWidget(u.WidgetWrap):
         # Calculate CPU efficiency
         cpu_eff = self._calculate_cpu_efficiency(job_data)
 
-        # Format submission date/time
+        # Format submission date/time (ISO 8601 style, left-aligned)
         if submission:
             submit_dt = datetime.datetime.fromtimestamp(submission)
             now = datetime.datetime.now()
             # Show time for recent jobs, date for older ones
             if submit_dt.date() == now.date():
                 # Today: show time only
-                date_str = submit_dt.strftime("%H:%M").rjust(16)
+                date_str = submit_dt.strftime("%H:%M")
             elif submit_dt.year == now.year:
-                # This year: show month-day and time
+                # This year: show month-day and time (ISO 8601: MM-DD)
                 date_str = submit_dt.strftime("%m-%d %H:%M")
             else:
-                # Previous years: show full date
+                # Previous years: show full date (ISO 8601: YYYY-MM-DD)
                 date_str = submit_dt.strftime("%Y-%m-%d %H:%M")
         else:
-            date_str = "N/A".rjust(16)
+            date_str = "N/A"
 
         # Format runtime
         runtime_str = format_duration(elapsed) if elapsed else "N/A"
+
+        # Format time limit
+        limit_info = time_info.get('limit', {})
+        if limit_info.get('set') and not limit_info.get('infinite'):
+            time_limit_sec = limit_info['number'] * 60  # Convert minutes to seconds
+            time_limit_str = format_duration(time_limit_sec)
+        else:
+            time_limit_str = "N/A"
 
         # Exit code
         exit_code_info = job_data.get('derived_exit_code', {})
         exit_code = exit_code_info.get('return_code', {}).get('number', '?')
 
-        # Build display text
-        text = f"{str(job_id):>8s} │ {name:<{self.name_width}s} │ {state:10s} │ {date_str:16s} │ {runtime_str:>10s} │ {cpu_eff:>5s} │ {str(exit_code):>3s}"
+        # Build display text (with 2-space prefix to match header)
+        text = f"  {str(job_id):>8s} │ {name:<{self.name_width}s} │ {state:10s} │ {date_str:16s} │ {runtime_str:>10s} │ {time_limit_str:>10s} │ {cpu_eff:>5s} │ {str(exit_code):>3s}"
 
         # Color code based on state and efficiency
         if state in ["FAILED", "TIMEOUT", "OUT_OF_MEMORY"]:
@@ -110,8 +118,9 @@ class JobHistoryView(u.WidgetWrap):
         '2': 'state',
         '3': 'submission',
         '4': 'elapsed',
-        '5': 'efficiency',
-        '6': 'exit_code',
+        '5': 'time_limit',
+        '6': 'efficiency',
+        '7': 'exit_code',
     }
 
     def __init__(self, main_screen, history_data, search_type, search_value, weeks_loaded=None):
@@ -199,10 +208,10 @@ class JobHistoryView(u.WidgetWrap):
         available_width = getattr(self.main_screen, 'width', 120) - 5
 
         # Fixed columns that don't change size
-        # Format: job_id(8) + sep(3) + state(10) + sep(3) + submitted(16) + sep(3) + runtime(10) + sep(3) + eff(5) + sep(3) + exit(3)
-        # = 8 + 3 + 10 + 3 + 16 + 3 + 10 + 3 + 5 + 3 + 3 = 67
-        # Plus "  " prefix = 69 total fixed
-        fixed_width = 69
+        # Format: job_id(8) + sep(3) + state(10) + sep(3) + submitted(16) + sep(3) + runtime(10) + sep(3) + limit(10) + sep(3) + eff(5) + sep(3) + exit(3)
+        # = 8 + 3 + 10 + 3 + 16 + 3 + 10 + 3 + 10 + 3 + 5 + 3 + 3 = 80
+        # Plus "  " prefix = 82 total fixed
+        fixed_width = 82
 
         # Remaining width goes to name column
         self.name_width = max(available_width - fixed_width, 15)  # Minimum 15 chars
@@ -348,6 +357,7 @@ class JobHistoryView(u.WidgetWrap):
             'state': 'State',
             'submission': 'Submitted',
             'elapsed': 'Runtime',
+            'time_limit': 'Time Limit',
             'efficiency': 'Efficiency',
             'exit_code': 'Exit Code'
         }
@@ -367,8 +377,9 @@ class JobHistoryView(u.WidgetWrap):
             ('2', 'state', 'State', 10),
             ('3', 'submission', 'Submitted', 16),
             ('4', 'elapsed', 'Runtime', 10),
-            ('5', 'efficiency', 'Eff %', 5),
-            ('6', 'exit_code', 'Exit', 3),
+            ('5', 'time_limit', 'Limit', 10),
+            ('6', 'efficiency', 'Eff %', 5),
+            ('7', 'exit_code', 'Exit', 3),
         ]
 
         header_parts = []
@@ -377,7 +388,10 @@ class JobHistoryView(u.WidgetWrap):
             # Subtle indicator if this is the sort column
             if self.sort_col == field:
                 col_label = f"[{col_label}]"
-            header_parts.append(col_label.ljust(width + (2 if self.sort_col == field else 0)))
+            # Truncate or pad to exact width to match data rows
+            if len(col_label) > width:
+                col_label = col_label[:width]
+            header_parts.append(col_label.ljust(width))
 
         header = "  " + " │ ".join(header_parts)
         self.walker.append(u.Text(('faded', header)))
@@ -399,6 +413,12 @@ class JobHistoryView(u.WidgetWrap):
                 return job.get('time', {}).get('submission', 0)
             elif self.sort_col == 'elapsed':
                 return job.get('time', {}).get('elapsed', 0)
+            elif self.sort_col == 'time_limit':
+                # Get time limit in seconds (stored as minutes in limit field)
+                limit_info = job.get('time', {}).get('limit', {})
+                if limit_info.get('set') and not limit_info.get('infinite'):
+                    return limit_info['number'] * 60  # Convert minutes to seconds
+                return -1  # Sort N/A to end
             elif self.sort_col == 'efficiency':
                 # Calculate efficiency for sorting
                 eff_str = HistoryJobWidget._calculate_cpu_efficiency(job)

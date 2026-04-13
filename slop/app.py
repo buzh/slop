@@ -81,7 +81,7 @@ class SC(u.WidgetWrap):
         # Handle window resize (if supported by the event loop)
         try:
             u.connect_signal(self.loop.screen, 'resize', self.on_resize)
-        except NameError:
+        except (NameError, AttributeError):
             pass  # Resize signal not available in this event loop
 
         super().__init__(self.frame)
@@ -179,13 +179,17 @@ Current scontrol duration: {fetch_duration:.1f}s"""
         self.width = col_rows[0]
         self.height = col_rows[1] - 4
 
-        # Notify current screen of resize
+        # Notify ALL screens of resize so they recalculate separator widths
         screens = [
             self.screen_my_jobs, self.screen_users, self.screen_accounts,
             self.screen_partitions, self.screen_states, self.screen_cluster
         ]
-        if 0 <= self.current_view < len(screens):
-            screens[self.current_view].on_resize()
+        for screen in screens:
+            screen.on_resize()
+
+        # Also update history view if it exists
+        if self.screen_history:
+            self.screen_history.on_resize()
 
         # Update footer to adapt to new width
         footer_types = ['myjobs', 'users', 'accounts', 'partitions', 'states', 'cluster']

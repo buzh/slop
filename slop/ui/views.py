@@ -552,9 +552,17 @@ class TwoColumnJobView(u.WidgetWrap):
 
         widgets = []
 
-        # Add divider with label
+        # Add section header with modern style
         if label:
-            widgets.append(JobListDivider(f"{label}"))
+            # Calculate separator width based on available space in right panel
+            # Right panel is 75% of screen width
+            available_width = getattr(self.main_screen, 'width', 120)
+            right_panel_width = int(available_width * 0.75) - 5  # Account for borders
+            label_upper = label.upper()
+            header_text = f"═══ {label_upper} "
+            remaining_width = max(right_panel_width - len(header_text), 20)
+            separator = "═" * remaining_width
+            widgets.append(u.AttrMap(u.Text(f"{header_text}{separator}"), 'jobheader'))
 
         # Find a representative job for this category (prefer non-array-parent)
         representative_job = None
@@ -703,11 +711,11 @@ class TwoColumnJobView(u.WidgetWrap):
 
             # Create column with same sizing as job widgets
             align, width, _ = display_attr[headeritem]
-            h = u.Text(label)
+            h = u.Text(('faded', label))
             header_columns.append((align, width, h))
 
         # Return the header as a widget
-        return u.AttrMap(u.Columns(header_columns, dividechars=1), 'jobheader')
+        return u.Columns(header_columns, dividechars=1)
 
     def calculate_jobs_per_group(self):
         """Calculate how many jobs to show per group when collapsed based on available height."""

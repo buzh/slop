@@ -334,10 +334,12 @@ class ScreenViewMyJobs(u.WidgetWrap):
                 total_count = len(state_jobs)
                 collapsed = self.collapsed_sections.get(state, True)
 
-                # Header with expand/collapse indicator
+                # Modern section header with expand/collapse indicator
                 expand_indicator = '▼' if not collapsed else '▶'
-                header_text = f"{expand_indicator} {state_icons[state]} ({total_count})"
-                widgets.append(u.Text(('jobheader', header_text)))
+                header_text = f"═══ {expand_indicator} {state_icons[state]} ({total_count}) "
+                remaining_width = max(available_width - len(header_text), 20)
+                separator = "═" * remaining_width
+                widgets.append(u.AttrMap(u.Text(f"{header_text}{separator}"), 'jobheader'))
 
                 # Sort jobs
                 sorted_jobs = sorted(state_jobs, key=lambda j: j.job_id, reverse=True)
@@ -354,8 +356,9 @@ class ScreenViewMyJobs(u.WidgetWrap):
                     for job in sorted_jobs:
                         widgets.append(MyJobDetailWidget(job, width=available_width))
 
-                # Only add divider between sections
-                widgets.append(u.Divider())
+                # Add blank line between sections for visual separation
+                if state != 'OTHER':  # Don't add after last section
+                    widgets.append(u.Divider())
 
         if widgets:
             self.job_walker.extend(widgets)
