@@ -1,7 +1,7 @@
 import re
 import time
 import datetime
-from slop.slurm import *
+
 
 def compress_int_range(numbers):
     if not numbers:
@@ -33,19 +33,27 @@ def compress_int_range(numbers):
 
 
 def nice_tres(job):
-    if job.tres_alloc_str:
-        req = job.tres_alloc_str.split(',')
-    else:
-        req = job.tres_req_str.split(',')
+    # Get tres string, prefer allocated over requested
+    tres_str = getattr(job, 'tres_alloc_str', '') or getattr(job, 'tres_req_str', '')
+
+    # If no tres string available, return empty
+    if not tres_str or not tres_str.strip():
+        return ''
+
+    req = tres_str.split(',')
     req_tres = {}
     req_tres['gputype'] = None
+
     for i in req:
-        key, value = i.split('=')
+        if '=' not in i:
+            continue  # Skip malformed entries
+        key, value = i.split('=', 1)  # Use maxsplit=1 in case value contains '='
         if re.match(r'gres\/gpu:', key):
             x = re.split(":", key, 1)
             req_tres['gputype'] = x[1]
         else:
             req_tres[key] = value
+
     parts = []
     if 'cpu' in req_tres:
         parts.append(f"{req_tres['cpu']} cores")

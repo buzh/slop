@@ -1,0 +1,86 @@
+name: Build RPM
+
+on:
+  release:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build (leave empty to use __init__.py)'
+        required: false
+        default: ''
+
+jobs:
+  build-rpm:
+    runs-on: ubuntu-latest
+    container:
+      image: almalinux:9
+
+    steps:
+      - name: Install build tools
+        run: |
+          dnf install -y rpm-build rpmdevtools python3-devel python3-pip git tar gzip
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get version
+        id: get_version
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          elif [ -n "${{ github.event.release.tag_name }}" ]; then
+            VERSION="${{ github.event.release.tag_name }}"
+            VERSION="${VERSION#v}"  # Remove 'v' prefix if present
+          else
+            VERSION=$(grep __version__ slop/__init__.py | cut -d'"' -f2)
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Building version: ${VERSION}"
+
+      - name: Setup RPM build tree
+        run: rpmdev-setuptree
+
+      - name: Update spec file version
+        run: |
+          VERSION="${{ steps.get_version.outputs.version }}"
+          sed -i "s/^Version:.*/Version:        ${VERSION}/" slop.spec
+
+      - name: Create source tarball
+        run: |
+          VERSION="${{ steps.get_version.outputs.version }}"
+          mkdir -p slop-${VERSION}
+          cp -r slop slop-${VERSION}/
+          cp README.md CLAUDE.md LICENSE slop.spec slop-${VERSION}/ 2>/dev/null || true
+          tar czf ~/rpmbuild/SOURCES/slop-${VERSION}.tar.gz slop-${VERSION}
+
+      - name: Copy spec file
+        run: cp slop.spec ~/rpmbuild/SPECS/
+
+      - name: Build RPM
+        run: |
+          rpmbuild -ba ~/rpmbuild/SPECS/slop.spec
+
+      - name: List built RPMs
+        run: |
+          echo "Built RPMs:"
+          ls -lh ~/rpmbuild/RPMS/x86_64/
+          ls -lh ~/rpmbuild/SRPMS/
+
+      - name: Upload RPMs as artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm-packages
+          path: |
+            ~/rpmbuild/RPMS/x86_64/slop-*.rpm
+            ~/rpmbuild/SRPMS/slop-*.src.rpm
+
+      - name: Upload RPMs to release
+        uses: softprops/action-gh-release@v1
+        if: github.event_name == 'release'
+        with:
+          files: |
+            ~/rpmbuild/RPMS/x86_64/slop-*.rpm
+            ~/rpmbuild/SRPMS/slop-*.src.rpm
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

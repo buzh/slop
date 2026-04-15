@@ -2,9 +2,22 @@ import urwid as u
 import datetime
 from slop.models import Jobs
 from slop.models_cluster import ClusterResources
-from slop.slurm import *
-from slop.utils import *
-from slop.ui.widgets import *
+from slop.slurm import (
+    is_running,
+    is_ended,
+    is_pending,
+    job_state_running,
+    job_state_ended,
+    job_state_pending,
+    reasons,
+)
+from slop.utils import format_duration, nice_tres, smart_truncate
+from slop.ui.widgets import (
+    ChildJobWidget,
+    ArrayPendWidget,
+    ExpandableGroupMarker,
+    UserItem,
+)
 
 class JobInfoOverlay(u.WidgetWrap):
     def __init__(self, job, main_screen=None):
@@ -346,6 +359,37 @@ class TwoColumnJobView(u.WidgetWrap):
         if self.main_screen.overlay_showing:
             return key
 
+        # 'h' key: open history for selected user (only in Users view)
+        if key == 'h' and self.entity_attr == 'user':
+            # Use the currently selected entity (tracked in self.selected_entity)
+            entity_name = self.selected_entity
+            if entity_name:
+                # Show "please wait" overlay immediately
+                from slop.ui.widgets import GenericOverlayText
+                self.main_screen.open_overlay(GenericOverlayText(
+                    self.main_screen,
+                    f"Loading history for {entity_name}...\n\nFetching account usage data..."
+                ))
+                self.main_screen.loop.draw_screen()
+
+                # Fetch sreport data for this user
+                result = self.main_screen.sreport_fetcher.fetch_user_utilization(entity_name)
+
+                # Close the overlay
+                self.main_screen.close_overlay()
+
+                if result:
+                    self.main_screen.handle_search_result(result, 'user', entity_name)
+                else:
+                    # Show error overlay if fetch failed
+                    self.main_screen.open_overlay(GenericOverlayText(
+                        self.main_screen,
+                        f"Failed to fetch data for {entity_name}"
+                    ))
+                return None
+            # If no entity selected, don't consume the key
+            return super().keypress(size, key)
+
         # 'e' key: toggle collapse/expand of similar job groups
         if key == 'e' and self.w.get_focus_column() == 1:
             focus_w, _ = self.jobwalker.get_focus()
@@ -387,65 +431,6 @@ class TwoColumnJobView(u.WidgetWrap):
                 self.sort_col = selected_col
                 self.sort_reverse = True
             self.draw_jobs()
-            return None
-
-        # 'h' key: show history for selected user/account
-        if key == 'h' and self.w.get_focus_column() == 0 and self.selected_entity:
-            # Create a progress overlay
-            from slop.ui.widgets import ProgressOverlay
-            progress_overlay = ProgressOverlay(self.main_screen, f"Fetching history for {self.selected_entity}...")
-            self.main_screen.open_overlay(progress_overlay)
-            self.main_screen.loop.draw_screen()
-
-            # Progress callback to update the overlay
-            def update_progress(status):
-                stage = status.get('stage', 'fetch')
-                window = status.get('window', '')
-                jobs = status.get('jobs_count', 0)
-                cached = status.get('cached', 0)
-                fresh = status.get('fresh', 0)
-                fetch_time = status.get('fetch_duration', 0)
-                new_jobs = status.get('new_in_window', 0)
-
-                if stage == 'cache':
-                    text = f"Fetching history for {self.selected_entity}...\n\nChecking cache for {window}...\n{jobs} jobs loaded ({cached} cached, {fresh} fresh)"
-                elif stage == 'fetch':
-                    text = f"Fetching history for {self.selected_entity}...\n\nFetching {window} from sacct...\n{jobs} jobs loaded"
-                elif stage == 'complete':
-                    if window == 'recent':
-                        text = f"Fetching history for {self.selected_entity}...\n\nRecent jobs: {jobs} jobs ({fetch_time:.2f}s)"
-                    else:
-                        text = f"Fetching history for {self.selected_entity}...\n\n{window}: +{new_jobs} jobs ({fetch_time:.3f}s)\nTotal: {jobs} jobs ({cached} cached, {fresh} fresh)"
-
-                progress_overlay.update_text(text)
-                self.main_screen.loop.draw_screen()
-
-            # Fetch history with adaptive fetching
-            result = None
-            if self.view_type == 'users':
-                result = self.main_screen.sacct_fetcher.fetch_adaptive_sync('user', self.selected_entity, progress_callback=update_progress)
-            elif self.view_type == 'accounts':
-                result = self.main_screen.sacct_fetcher.fetch_adaptive_sync('account', self.selected_entity, progress_callback=update_progress)
-
-            # Close the fetching overlay
-            self.main_screen.close_overlay()
-
-            # Show results or error
-            if result and result.get('jobs'):
-                self.main_screen.handle_search_result(result, self.view_type.rstrip('s'), self.selected_entity)
-            else:
-                # Show error message
-                error_overlay = GenericOverlayText(self.main_screen, f"No history found for {self.selected_entity}\n\nPress Esc to close")
-                self.main_screen.open_overlay(error_overlay)
-            return None
-
-        # Debug key
-        if key == 'x':
-            focus_w, _ = self.jobwalker.get_focus()
-            if hasattr(focus_w, "jobid"):
-                job = self.jobs.job_index.get(focus_w.jobid)
-                job.widget.refresh()
-                self.draw_jobs()
             return None
 
         return super().keypress(size, key)
@@ -500,10 +485,9 @@ class TwoColumnJobView(u.WidgetWrap):
 
     def categorize_jobs(self, jobtable):
         job_sets = {
-            "Array": [],
             "Running": [],
-            "Ended": [],
             "Pending": [],
+            "Ended": [],
             "Other": []
         }
         for job in jobtable:
@@ -584,8 +568,8 @@ class TwoColumnJobView(u.WidgetWrap):
             if group_key in self.collapsed_groups:
                 is_collapsed = self.collapsed_groups[group_key]
             else:
-                # Auto-collapse only very large groups (>20 jobs)
-                is_collapsed = group_count > 20
+                # Auto-collapse only very large groups (>30 jobs)
+                is_collapsed = group_count > 30
 
             # Determine how many to show when collapsed
             if is_collapsed and group_count > self.jobs_per_group:
@@ -615,12 +599,13 @@ class TwoColumnJobView(u.WidgetWrap):
                         if running_children:
                             widgets.extend(running_children)
 
-                        # Show pending children
+                        # Show pending children - be generous with space
                         pending_count = len(pending_children)
                         if pending_count > 0:
-                            # Show at least one pending child for inspection, or all if there are few
-                            if pending_count <= 3:
-                                # Show all pending if 3 or fewer
+                            # Show at least one, or all if there are few or plenty of screen space
+                            # We'll show all for small counts, otherwise show first + summary
+                            if pending_count <= 10:
+                                # Show all pending if 10 or fewer (increased from 3)
                                 for child in pending_children:
                                     widgets.append(ChildJobWidget(child))
                             else:
@@ -663,10 +648,10 @@ class TwoColumnJobView(u.WidgetWrap):
         is_pending = bool(job_states & job_state_pending)
 
         dynamic_labels = {
-            'start_time': lambda: "Running" if job_is_running else "Started" if is_ended else "Array" if is_array else "Starting",
+            'start_time': lambda: "Running" if job_is_running else "Started" if is_ended else "Starting",
             'job_state': lambda: "Status" if is_ended else "S",
             'wall_time': lambda: "Duration" if not is_pending else "Time",
-            'nodes': lambda: "Nodes" if not is_array_parent else "",
+            'nodes': lambda: "Nodes",
         }
 
         static_labels = {
@@ -706,8 +691,8 @@ class TwoColumnJobView(u.WidgetWrap):
 
             # Add sort indicator if this is the sorted column
             if self.sort_col == headeritem:
-                arrow = "▼" if self.sort_reverse else "▲"
-                label = f"{label}{arrow}"
+                arrow = "↓" if self.sort_reverse else "↑"
+                label = f"{label} {arrow}"
 
             # Create column with same sizing as job widgets
             align, width, _ = display_attr[headeritem]
@@ -773,35 +758,34 @@ class TwoColumnJobView(u.WidgetWrap):
             job_sets = self.categorize_jobs(jobtable)
 
             jobwalker_widgets = []
-            # Priority order: Running > Pending > Ended > Array > Other
-            for job_category in ["Running", "Pending", "Ended", "Array", "Other"]:
+            # Priority order: Running > Pending > Ended > Other
+            for job_category in ["Running", "Pending", "Ended", "Other"]:
                 jobwalker_widgets.extend(self.build_job_widgets(job_sets[job_category], label=job_category))
 
-            # If we have screen space left and there are collapsed groups, expand some to fill screen
+            # If we have screen space left and there are collapsed groups, expand them to fill screen
             if hasattr(self.main_screen, 'height'):
                 available_lines = self.main_screen.height - 5  # Reserve for header/footer
                 current_widget_count = len(jobwalker_widgets)
 
-                # If we have lots of empty space, try to expand collapsed groups
-                if current_widget_count < available_lines * 0.7:
+                # If we have empty space, aggressively expand collapsed groups to fill it
+                if current_widget_count < available_lines * 0.9:
                     # Find collapsed groups that could be expanded
                     expandable = []
                     for widget in jobwalker_widgets:
                         if isinstance(widget, ExpandableGroupMarker):
                             expandable.append(widget.group_key)
 
-                    # Auto-expand some groups if we have room
-                    if expandable and current_widget_count < available_lines * 0.5:
-                        # Expand the first few collapsed groups to fill more space
-                        for group_key in expandable[:2]:  # Expand up to 2 groups
-                            if group_key in self.collapsed_groups and self.collapsed_groups[group_key]:
+                    # Auto-expand groups to fill available space
+                    if expandable:
+                        # Expand all groups that fit in available space
+                        for group_key in expandable:
+                            if group_key in self.collapsed_groups:
                                 self.collapsed_groups[group_key] = False
 
-                        # Rebuild if we changed anything
-                        if any(not self.collapsed_groups.get(gk, True) for gk in expandable[:2]):
-                            jobwalker_widgets = []
-                            for job_category in ["Running", "Pending", "Ended", "Array", "Other"]:
-                                jobwalker_widgets.extend(self.build_job_widgets(job_sets[job_category], label=job_category))
+                        # Rebuild with expanded groups
+                        jobwalker_widgets = []
+                        for job_category in ["Running", "Pending", "Ended", "Other"]:
+                            jobwalker_widgets.extend(self.build_job_widgets(job_sets[job_category], label=job_category))
 
             self.jobwalker.extend(jobwalker_widgets)
             self.jw.set_title(self.right_title_template.format(entity=self.selected_entity))

@@ -1,8 +1,8 @@
 import urwid as u
 import datetime
 import time
-from slop.utils import *
-from slop.slurm import *
+from slop.utils import format_duration, nice_tres, compress_int_range
+from slop.slurm import is_running, job_state_running, job_state_ended, job_state_pending, job_state_short
 from slop import __version__
 from slop.ui.style import get_display_attr
 
@@ -22,12 +22,75 @@ class ChildJobWidget(u.WidgetWrap):
     def __init__(self, job):
         self.job = job
         self.jobid = job.job_id
-        self.display_attr = job.widget.display_attr
-        indented_widget = u.Columns([
-            ('fixed', 2, u.Text('  ')),
-            job.widget
-        ])
-        super().__init__(indented_widget)
+
+        # Build compact, informative display for array child
+        task_id = job._task_id if hasattr(job, '_task_id') and job._task_id is not None else '?'
+
+        # Determine state symbol and color
+        if "COMPLETED" in job.states:
+            symbol, color = "✓", "state_running"
+        elif {"FAILED", "NODE_FAIL", "OUT_OF_MEMORY"} & job.states:
+            symbol, color = "✗", "state_failed"
+        elif "TIMEOUT" in job.states:
+            symbol, color = "⚠", "warning"
+        elif "CANCELLED" in job.states:
+            symbol, color = "⊗", "faded"
+        elif {"RUNNING", "COMPLETING"} & job.states:
+            symbol, color = "↻", "state_running"
+        elif "PENDING" in job.states:
+            symbol, color = "⋯", "state_pending"
+        else:
+            symbol, color = "·", "faded"
+
+        # Build display based on state
+        if is_running(job):
+            # Running: Task [5]: ↻ 3h12m on c1-12 (100 cores, 100G mem)
+            start_time = getattr(job, 'start_time', {})
+            if isinstance(start_time, dict) and start_time.get('number'):
+                elapsed = int(time.time()) - start_time['number']
+                runtime = format_duration((elapsed // 60) * 60)
+            else:
+                runtime = "N/A"
+
+            node = getattr(job, 'nodes', 'N/A')
+            tres = nice_tres(job) if hasattr(job, 'tres_alloc_str') else ''
+
+            text = f"  Task [{task_id}]: {symbol} {runtime}"
+            if node != 'N/A' and node:
+                text += f" on {node}"
+            if tres:
+                text += f" ({tres})"
+
+        elif "PENDING" in job.states:
+            # Pending: Task [8]: ⋯ Priority (10h requested)
+            reason = getattr(job, 'state_reason', 'Unknown')
+            time_limit = getattr(job, 'time_limit', {})
+            if isinstance(time_limit, dict) and time_limit.get('number'):
+                requested = format_duration(time_limit['number'] * 60)
+            else:
+                requested = "N/A"
+
+            text = f"  Task [{task_id}]: {symbol} {reason} ({requested} requested)"
+
+        else:
+            # Ended: Task [5]: ✓ 3h42m (exit: 0) or ✗ 0h5m (exit: 1, OutOfMemory)
+            wall_time_val = getattr(job, 'end_time', {}).get('number', 0) - getattr(job, 'start_time', {}).get('number', 0)
+            wall_time = format_duration(wall_time_val) if wall_time_val > 0 else "N/A"
+            exit_code = getattr(job, 'returncode', 'N/A')
+
+            text = f"  Task [{task_id}]: {symbol} {wall_time} (exit: {exit_code}"
+
+            # Add reason for failed/timed out/OOM jobs
+            if {"FAILED", "NODE_FAIL", "OUT_OF_MEMORY", "TIMEOUT"} & job.states:
+                reason = getattr(job, 'state_reason', '')
+                if reason and reason != 'None':
+                    text += f", {reason}"
+
+            text += ")"
+
+        text_widget = u.Text(text)
+        widget = u.AttrMap(text_widget, 'normal', 'normal_selected')
+        super().__init__(widget)
 
     def selectable(self):
         return True
@@ -52,16 +115,17 @@ class UserJobListHeader(u.WidgetWrap): # Dynamic header line item for job walker
         is_pending = bool(job_states & job_state_pending)
 
         dynamic_labels = {
-            'start_time': lambda: "Running" if is_running else "Started" if is_ended else "Array" if is_array else "Starting",
+            'start_time': lambda: "Running" if is_running else "Started" if is_ended else "Starting",
             'job_state': lambda: "Status" if is_ended else "S",
             'wall_time': lambda: "Duration" if not is_pending else "Time",
-            'nodes': lambda: "Nodes" if not is_array_parent else "",
+            'nodes': lambda: "Nodes",
         }
 
         static_labels = {
             'end_time': "Deadline",
             'submit_time': "Submitted",
             'job_id': "Job ID",
+            'task_id': "Task",
             'account': "Acct",
             'exit_code': "Exit code",
             'array_tasks': "Array",
@@ -78,8 +142,8 @@ class UserJobListHeader(u.WidgetWrap): # Dynamic header line item for job walker
                 label = headeritem.capitalize()
 
             if parent.sort_col == headeritem:
-                arrow = ">" if parent.sort_reverse else "<"
-                label = f"{label}{arrow}"
+                arrow = "↓" if parent.sort_reverse else "↑"
+                label = f"{label} {arrow}"
 
             h = u.Text(label)
             header.append((display_attr[headeritem][0], display_attr[headeritem][1], h))
@@ -91,9 +155,10 @@ class UserJobListHeader(u.WidgetWrap): # Dynamic header line item for job walker
 class UserJobListWidget(u.WidgetWrap):
     def __init__(self, job, width=None, view_type=None):
         self.job = job
-        self.start_time = job.start_time.get("number", False)
-        self.end_time = job.end_time["number"]
-        self.time_limit = job.time_limit["number"]
+        # Defensive field access - sacct jobs may not have all fields
+        self.start_time = getattr(job, 'start_time', {}).get("number", False) if hasattr(job, 'start_time') else False
+        self.end_time = getattr(job, 'end_time', {}).get("number", 0) if hasattr(job, 'end_time') else 0
+        self.time_limit = getattr(job, 'time_limit', {}).get("number", 0) if hasattr(job, 'time_limit') else 0
         self.jobid = job.job_id
         self.width = width
         self.view_type = view_type
@@ -105,15 +170,8 @@ class UserJobListWidget(u.WidgetWrap):
     def create_widget(self):
         job = self.job
 
-        if job.is_array_child:
-            if is_running(job):
-                wrapped_text = self.get_label(job)
-            else:
-                tid = job._task_id
-                state = ",".join(job.states)
-                wrapped_text = [ u.Text(f"Array task: {tid} {state} {job.state_reason} ") ]
-        else:
-            wrapped_text = self.get_label(job)
+        # All jobs (including array children) use get_label() for consistent column display
+        wrapped_text = self.get_label(job)
 
         col = u.Columns(wrapped_text, dividechars=1)
         w = u.AttrMap(col, 'normal', 'normal_selected')
@@ -127,13 +185,50 @@ class UserJobListWidget(u.WidgetWrap):
         for col, (align, width, wrap_mode) in self.display_attr.items():
             value = getattr(job, col, None)
             now = datetime.datetime.now()
-
+            text_attr = None  # Track if we need to apply a color attribute
 
             if col == "job_state":
-                if { "RUNNING", "PENDING" } & job.states:
-                    t = ",".join(slurm.status_shortnames.get(s, f"?{s}") for s in job.job_state)
+                # For array parents with running children, show as running regardless of parent state
+                if job.is_array_parent and job.has_running_children:
+                    symbol = "↻"
+                    text_attr = "state_running"  # green
+                    # Show R instead of parent's actual state for clarity
+                    short_states = "R"
                 else:
-                    t = job.job_state
+                    # Always use short form with color and symbol
+                    short_states = ",".join(job_state_short.get(s, f"?{s}") for s in job.job_state)
+
+                    # Determine symbol and color based on state
+                    if "COMPLETED" in job.states:
+                        symbol = "✓"
+                        text_attr = "state_running"  # green
+                    elif {"FAILED", "NODE_FAIL", "OUT_OF_MEMORY"} & job.states:
+                        symbol = "✗"
+                        text_attr = "state_failed"  # red
+                    elif "TIMEOUT" in job.states:
+                        symbol = "⚠"
+                        text_attr = "warning"  # yellow
+                    elif "CANCELLED" in job.states:
+                        symbol = "⊗"
+                        text_attr = "faded"  # gray
+                    elif {"RUNNING", "COMPLETING"} & job.states:
+                        symbol = "↻"
+                        text_attr = "state_running"  # green
+                    elif "PENDING" in job.states:
+                        symbol = "⋯"
+                        text_attr = "state_pending"  # yellow
+                    else:
+                        # Other states (CONFIGURING, SUSPENDED, etc.)
+                        symbol = "·"
+                        text_attr = "faded"
+
+                t = f"{symbol} {short_states}"
+            elif col == "task_id":
+                # For array children, show task ID
+                if job.is_array_child and job._task_id is not None:
+                    t = f"[{job._task_id}]"
+                else:
+                    t = "N/A"
             elif col == "job_id":
                 if job.is_array_parent:
                     marker = "▼" if not job.array_collapsed_widget else "▶"
@@ -158,11 +253,14 @@ class UserJobListWidget(u.WidgetWrap):
                 else:
                     t = "N/A"
             elif col == "submit_time": # epoch -> HH:MM (if today) or day/month HH:MM
-                timestamp = datetime.datetime.fromtimestamp(int(value["number"]))
-                if timestamp.date() == now.date():
-                    t = timestamp.strftime('%H:%M')
+                if value and isinstance(value, dict) and "number" in value:
+                    timestamp = datetime.datetime.fromtimestamp(int(value["number"]))
+                    if timestamp.date() == now.date():
+                        t = timestamp.strftime('%H:%M')
+                    else:
+                        t = timestamp.strftime('%d/%m %H:%M')
                 else:
-                    t = timestamp.strftime('%d/%m %H:%M')
+                    t = "N/A"
             elif col == "wall_time": # if pending, show time requested. otherwise, show duration so far
                 if 'PENDING' in job.states:
                     t = format_duration(self.time_limit * 60)
@@ -180,7 +278,11 @@ class UserJobListWidget(u.WidgetWrap):
             else:
                 t = str(value)
 
-            wrapped_text = u.Text(t)
+            # Create Text widget with optional color attribute
+            if text_attr:
+                wrapped_text = u.Text((text_attr, t))
+            else:
+                wrapped_text = u.Text(t)
 
             # Always set a wrap mode to prevent overflow (default to 'clip' if None)
             wrapped_text.set_wrap_mode(wrap_mode if wrap_mode else 'clip')
@@ -247,16 +349,13 @@ class Header(u.WidgetWrap):
             self.text_left.set_text(f"Slurm Top {__version__} - {view_name}")
         else:
             self.text_left.set_text(f"Slurm Top {__version__}")
-        self.text_right.set_text("q: Quit")
+        self.text_right.set_text("")  # Empty - shortcuts now in footer
 
 class Footer(u.WidgetWrap):
     def __init__(self, main_screen=None):
         self.main_screen = main_screen
-        self.text_left = u.Text("", wrap='clip')
-        self.text_center = u.Text("", align='center', wrap='clip')
-        self.text_right = u.Text("", align='right', wrap='clip')
-        # Three-column layout for better space utilization
-        footer = u.AttrWrap(u.Columns([self.text_left, self.text_center, self.text_right]), 'footer')
+        self.text = u.Text("", wrap='clip')
+        footer = u.AttrWrap(self.text, 'footer')
         u.WidgetWrap.__init__(self, footer)
 
     def update(self, view_type=None, f1_label=None):
@@ -264,109 +363,20 @@ class Footer(u.WidgetWrap):
 
         Args:
             view_type: Current view type ('myjobs', 'users', 'cluster', etc.)
-            f1_label: Label for F1 key (what will happen on next F1 press)
+            f1_label: Label for F1 key (deprecated, kept for compatibility)
         """
         # Get screen width for responsive content
         screen_width = getattr(self.main_screen, 'width', 120)
 
-        # Build shortcuts based on screen width and view type
+        # Build shortcuts based on screen width
         if screen_width < 90:
-            # Narrow: Very compact
-            shortcuts = self._build_narrow_shortcuts(view_type)
+            text = "F1-7:Views ?:Help q:Quit"
         elif screen_width < 140:
-            # Medium: Balanced
-            shortcuts = self._build_medium_shortcuts(view_type)
+            text = "F1-F7: Views | ?: Help | q: Quit"
         else:
-            # Wide: Full descriptions
-            shortcuts = self._build_wide_shortcuts(view_type)
+            text = "F1: Jobs/Users | F2: Accounts | F3: Partitions | F4: States | F5: Cluster | F6: History | F7: Queue | ?: Help | q: Quit"
 
-        self.text_left.set_text(shortcuts['left'])
-        self.text_center.set_text(shortcuts.get('center', ''))
-        self.text_right.set_text(shortcuts.get('right', ''))
-
-    def _build_narrow_shortcuts(self, view_type):
-        """Minimal shortcuts for narrow screens (<90 cols)."""
-        left_parts = ["F1-5:Views", "/:Search"]
-
-        if view_type == 'history':
-            left_parts.append("Esc:Back")
-        elif view_type in ['users', 'accounts', 'partitions', 'states']:
-            left_parts.append("h:Hist")
-            left_parts.append("e:Grp")
-        elif view_type == 'myjobs':
-            left_parts.append("e:Expand")
-
-        left_parts.append("?:Help")
-
-        right = ""
-        if view_type == 'history':
-            right = "0-7:Sort"
-        elif view_type != 'cluster':
-            right = "0-6:Sort"
-
-        return {'left': ' '.join(left_parts), 'right': right}
-
-    def _build_medium_shortcuts(self, view_type):
-        """Moderate detail for medium screens (90-140 cols)."""
-        left_parts = ["F1-F5: Views", "/: Search"]
-
-        center = ""
-        if view_type == 'history':
-            center = "Enter: Details | Esc: Back"
-        elif view_type in ['users', 'accounts', 'partitions', 'states']:
-            center = "h: History | e: Groups | Enter: Details"
-        elif view_type == 'myjobs':
-            center = "e: Expand/Collapse | Enter: Details"
-        elif view_type == 'cluster':
-            center = "Arrows: Scroll"
-
-        left_parts.append("?: Info")
-
-        right = ""
-        if view_type == 'history':
-            right = "0-7: Sort"
-        elif view_type != 'cluster':
-            right = "0-6: Sort"
-
-        return {'left': ' | '.join(left_parts), 'center': center, 'right': right}
-
-    def _build_wide_shortcuts(self, view_type):
-        """Full descriptions for wide screens (>140 cols)."""
-        # Left: Navigation
-        left_parts = [
-            "F1: My Jobs/Users",
-            "F2: Accounts",
-            "F3: Partitions",
-            "F4: States",
-            "F5: Cluster"
-        ]
-
-        # Center: View-specific actions
-        center_parts = []
-        if view_type == 'history':
-            center_parts = ["/: Search", "Enter: Job Details", "Esc: Back to Jobs", "?: App Info"]
-        elif view_type in ['users', 'accounts']:
-            center_parts = ["/: Search", "h: User History", "e: Expand Groups", "Enter: Job Details", "?: Info"]
-        elif view_type in ['partitions', 'states']:
-            center_parts = ["/: Search", "e: Expand Groups", "Enter: Job Details", "?: Info"]
-        elif view_type == 'myjobs':
-            center_parts = ["/: Search", "e: Expand/Collapse Sections", "Enter: Job Details", "?: Info"]
-        elif view_type == 'cluster':
-            center_parts = ["/: Search", "Arrows: Scroll", "?: App Info"]
-
-        # Right: Sorting/Exit
-        right_parts = []
-        if view_type == 'history':
-            right_parts.append("0-7: Sort Columns")
-        elif view_type != 'cluster':
-            right_parts.append("0-6: Sort Columns")
-        right_parts.append("q: Quit")
-
-        return {
-            'left': ' | '.join(left_parts),
-            'center': ' | '.join(center_parts),
-            'right': ' | '.join(right_parts)
-        }
+        self.text.set_text(text)
 
 
 class GenericOverlayText(u.WidgetWrap):
@@ -383,6 +393,37 @@ class GenericOverlayText(u.WidgetWrap):
         t = u.Text(text, align='center')
         linebox = u.LineBox(
             u.Filler(t),
+            tlcorner='╭', trcorner='╮',
+            blcorner='╰', brcorner='╯'
+        )
+        widget = u.AttrMap(linebox, 'bg')
+        u.WidgetWrap.__init__(self, widget)
+
+
+class HelpOverlay(u.WidgetWrap):
+    """Overlay for displaying keyboard shortcuts help."""
+    def __init__(self, main_screen, text_lines):
+        """
+        Args:
+            main_screen: Main screen instance
+            text_lines: List of strings or (attr, string) tuples
+        """
+        self.overlay_height = len(text_lines) + 4  # pad with 4 extra lines
+
+        # Convert each line to a Text widget
+        widgets = []
+        for line in text_lines:
+            if isinstance(line, tuple):
+                # (attr, text) tuple
+                widgets.append(u.Text((line[0], line[1])))
+            else:
+                # Plain string
+                widgets.append(u.Text(line))
+
+        listbox = u.ListBox(u.SimpleFocusListWalker(widgets))
+        linebox = u.LineBox(
+            listbox,
+            title="Help",
             tlcorner='╭', trcorner='╮',
             blcorner='╰', brcorner='╯'
         )

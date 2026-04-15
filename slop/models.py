@@ -1,10 +1,13 @@
 """ data models for slop """
 import urwid as u
 from slop.ui.widgets import UserJobListWidget
-from slop.slurm import *
-from slop.anonymize import (
-    anonymize_user, anonymize_account, anonymize_node,
-    anonymize_job_name, anonymize_path
+from slop.slurm import (
+    is_running,
+    is_ended,
+    is_pending,
+    job_state_running,
+    job_state_ended,
+    job_state_pending,
 )
 
 """ a singular job """
@@ -14,48 +17,113 @@ class Job:
         for key, value in job_data.items():
             setattr(self, key, value)
 
-        # Anonymize sensitive fields if demo mode is enabled
-        if hasattr(self, 'user_name') and self.user_name:
-            self.user_name = anonymize_user(self.user_name)
-        if hasattr(self, 'account') and self.account:
-            self.account = anonymize_account(self.account)
-        if hasattr(self, 'name') and self.name:
-            self.name = anonymize_job_name(self.name)
-        if hasattr(self, 'nodes') and self.nodes and isinstance(self.nodes, str):
-            # Anonymize comma-separated node list
-            nodes = [anonymize_node(n.strip()) for n in self.nodes.split(',')]
-            self.nodes = ','.join(nodes)
-        if hasattr(self, 'working_directory') and self.working_directory:
-            self.working_directory = anonymize_path(self.working_directory)
-        if hasattr(self, 'standard_output') and self.standard_output:
-            self.standard_output = anonymize_path(self.standard_output)
-        if hasattr(self, 'standard_error') and self.standard_error:
-            self.standard_error = anonymize_path(self.standard_error)
+        # Normalize sacct data to scontrol format if needed
+        self._normalize_sacct_data()
 
         # store states as set to avoid enumerating repeatedly later
-        self.states = set(self.job_state) 
-        self._task_id = self._extract_number("array_task_id")
-        e = ",".join(self.exit_code["status"])
-        c = self.exit_code["return_code"]["number"]
-        self.returncode = f"{e}({c})"
+        if hasattr(self, 'job_state'):
+            self.states = set(self.job_state)
+        else:
+            self.states = set()
 
-        if self.array_job_id["number"] == 0:
+        self._task_id = self._extract_number("array_task_id") if hasattr(self, 'array_task_id') else None
+
+        # Handle exit code (scontrol vs sacct format)
+        if hasattr(self, 'exit_code') and isinstance(self.exit_code, dict):
+            e = ",".join(self.exit_code.get("status", []))
+            c = self.exit_code.get("return_code", {}).get("number", 0)
+            self.returncode = f"{e}({c})" if e else str(c)
+        else:
+            self.returncode = "N/A"
+
+        # Handle array job detection
+        if hasattr(self, 'array_job_id') and isinstance(self.array_job_id, dict):
+            array_num = self.array_job_id.get("number", 0)
+            if array_num == 0:
+                self.is_array = False
+                self.is_array_parent = False
+                self.is_array_child = False
+            else:
+                self.is_array = True
+                self.array_parent_id = array_num
+                if self.array_parent_id == self.job_id:
+                    self.is_array_parent = True
+                    self.is_array_child = False
+                else:
+                    self.is_array_child = True
+                    self.is_array_parent = False
+        else:
+            # No array info available (sacct historical data)
             self.is_array = False
             self.is_array_parent = False
             self.is_array_child = False
-        else:
-            self.is_array = True
-            self.array_parent_id = self.array_job_id["number"]
-            if self.array_parent_id == self.job_id:
-                self.is_array_parent = True
-                self.is_array_child = False
-            else:
-                self.is_array_child = True
-                self.is_array_parent = False
 
         self.array_children = []
         self.array_parent = None
         self.array_collapsed_widget = True
+
+    def _normalize_sacct_data(self):
+        """Normalize sacct JSON format to match scontrol format."""
+        # sacct uses 'state' with 'current' array, scontrol uses 'job_state'
+        if hasattr(self, 'state') and not hasattr(self, 'job_state'):
+            if isinstance(self.state, dict) and 'current' in self.state:
+                self.job_state = self.state['current']
+                # sacct has 'reason' in state dict, scontrol uses 'state_reason'
+                if 'reason' in self.state and not hasattr(self, 'state_reason'):
+                    self.state_reason = self.state['reason']
+            else:
+                self.job_state = []
+
+        # Provide default state_reason if missing
+        if not hasattr(self, 'state_reason'):
+            self.state_reason = "None"
+
+        # sacct uses 'user', scontrol uses 'user_name'
+        if hasattr(self, 'user') and not hasattr(self, 'user_name'):
+            self.user_name = self.user
+
+        # sacct uses 'derived_exit_code', scontrol uses 'exit_code'
+        if hasattr(self, 'derived_exit_code') and not hasattr(self, 'exit_code'):
+            self.exit_code = self.derived_exit_code
+
+        # sacct uses 'time' dict, scontrol uses separate time fields
+        if hasattr(self, 'time') and isinstance(self.time, dict):
+            if 'start' in self.time and not hasattr(self, 'start_time'):
+                self.start_time = {"number": self.time['start']} if self.time['start'] else {"number": 0}
+            if 'end' in self.time and not hasattr(self, 'end_time'):
+                self.end_time = {"number": self.time['end']} if self.time['end'] else {"number": 0}
+            if 'submission' in self.time and not hasattr(self, 'submit_time'):
+                self.submit_time = {"number": self.time['submission']} if self.time['submission'] else {"number": 0}
+            if 'limit' in self.time and not hasattr(self, 'time_limit'):
+                # time.limit is already in dict format in sacct
+                self.time_limit = self.time['limit']
+
+        # sacct uses 'array' dict, scontrol uses separate array fields
+        if hasattr(self, 'array') and isinstance(self.array, dict):
+            if 'job_id' in self.array and not hasattr(self, 'array_job_id'):
+                self.array_job_id = {"number": self.array['job_id']}
+            if 'task_id' in self.array and not hasattr(self, 'array_task_id'):
+                # sacct's task_id is already a dict with 'number' key
+                if isinstance(self.array['task_id'], dict):
+                    self.array_task_id = self.array['task_id']
+                else:
+                    self.array_task_id = {"number": self.array['task_id']}
+
+        # sacct uses 'required' dict, scontrol uses top-level fields
+        if hasattr(self, 'required') and isinstance(self.required, dict):
+            if 'CPUs' in self.required and not hasattr(self, 'cpus'):
+                self.cpus = {"set": True, "number": self.required['CPUs']}
+            # memory_per_cpu and memory_per_node are already in correct format in sacct
+            if 'memory_per_cpu' in self.required and not hasattr(self, 'memory_per_cpu'):
+                self.memory_per_cpu = self.required['memory_per_cpu']
+            if 'memory_per_node' in self.required and not hasattr(self, 'memory_per_node'):
+                self.memory_per_node = self.required['memory_per_node']
+
+        # Provide empty tres strings if not present (sacct has complex tres structure)
+        if not hasattr(self, 'tres_alloc_str'):
+            self.tres_alloc_str = ""
+        if not hasattr(self, 'tres_req_str'):
+            self.tres_req_str = ""
 
     """ widgets are properties so they are created only when called """
     @property
@@ -88,8 +156,10 @@ class Job:
         return None
 
     def get_state_category(self):
-        if self.is_array:
-            return "Array"
+        # Categorize by actual state, not by array status
+        # Array parents with running children should be in "Running"
+        if self.is_array_parent and self.has_running_children:
+            return "Running"
         elif self.states & job_state_running:
             return "Running"
         elif self.states & job_state_ended:
@@ -234,7 +304,12 @@ class Jobs:
 
     def get_user_jobs(self, username):
         """Get all jobs for a specific user, grouped by state."""
-        user_jobs = [job for job in self.jobs if job.user_name == username]
+        # Case-insensitive, whitespace-stripped comparison for robustness
+        username_normalized = username.strip().lower()
+        user_jobs = [
+            job for job in self.jobs
+            if hasattr(job, 'user_name') and job.user_name.strip().lower() == username_normalized
+        ]
 
         if not user_jobs:
             return None
