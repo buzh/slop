@@ -274,15 +274,9 @@ class SC(u.WidgetWrap):
         for screen in screens:
             screen.on_resize()
 
-<<<<<<< HEAD
-        # Also update history view if it exists
-        if self.screen_history:
-            self.screen_history.on_resize()
-=======
         # Also update report view if it exists
         if self.screen_report:
             self.screen_report.on_resize()
->>>>>>> feature/adaptive-history
 
         # Update footer to adapt to new width
         footer_types = ['myjobs', 'users', 'accounts', 'partitions', 'states', 'cluster']
