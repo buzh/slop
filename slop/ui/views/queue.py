@@ -272,7 +272,6 @@ class QueueGroupWidget(u.WidgetWrap):
                 durations.append(time_limit.get('number', 0))
 
         if durations:
-            from slop.utils import format_duration
             min_dur = min(durations)
             max_dur = max(durations)
             if min_dur == max_dur:

@@ -4,8 +4,10 @@ import urwid as u
 import subprocess
 import re
 
+from slop.ui.tab_completion import TabCompletionMixin
 
-class SearchOverlay(u.WidgetWrap):
+
+class SearchOverlay(TabCompletionMixin, u.WidgetWrap):
     """Overlay for searching jobs by various criteria."""
 
     def __init__(self, main_screen, sreport_fetcher, adaptive_sacct, on_result):
@@ -34,10 +36,7 @@ class SearchOverlay(u.WidgetWrap):
         self.status_text = u.Text("")
         self.suggestions_text = u.Text("", wrap='clip')
 
-        # Tab completion state
-        self.current_matches = []
-        self.completion_index = 0
-        self.in_tab_completion = False
+        self._init_completion()
 
         # Build widget list
         widgets = [
@@ -142,36 +141,14 @@ class SearchOverlay(u.WidgetWrap):
             return None
 
         if key == 'tab':
-            self._handle_tab_completion()
+            self._cycle_completion()
             return None
 
         # Reset completion state when user types (not tab)
         if key not in ['tab', 'enter', 'esc']:
-            self.completion_index = 0
-            self.in_tab_completion = False
+            self._reset_completion()
 
         return super().keypress(size, key)
-
-    def _handle_tab_completion(self):
-        """Handle tab completion for search matches."""
-        if not self.current_matches:
-            return
-
-        current_text = self.search_edit.get_edit_text().strip()
-
-        # If we're cycling through completions (repeated tabs)
-        if self.in_tab_completion and len(self.current_matches) > 1:
-            # Move to next match
-            self.completion_index = (self.completion_index + 1) % len(self.current_matches)
-        else:
-            # First tab - start from beginning
-            self.completion_index = 0
-            self.in_tab_completion = True
-
-        # Set the completion
-        completion = self.current_matches[self.completion_index]
-        self.search_edit.set_edit_text(completion)
-        self.search_edit.set_edit_pos(len(completion))
 
     def _detect_search_type(self, query):
         """Detect what type of search this is.

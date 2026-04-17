@@ -48,12 +48,15 @@ class Job:
             else:
                 self.is_array = True
                 self.array_parent_id = array_num
-                if self.array_parent_id == self.job_id:
-                    self.is_array_parent = True
-                    self.is_array_child = False
-                else:
-                    self.is_array_child = True
-                    self.is_array_parent = False
+                # array_task_id.set=False marks the abstract parent that stands
+                # in for unscheduled tasks; True marks a concrete scheduled task.
+                # When job_id == array_job_id but task_id is set, it's a single
+                # concrete task that happens to reuse the array id — render it
+                # as a regular job rather than an empty expandable parent.
+                task_id_set = isinstance(getattr(self, 'array_task_id', None), dict) \
+                    and self.array_task_id.get('set', False)
+                self.is_array_parent = (self.array_parent_id == self.job_id) and not task_id_set
+                self.is_array_child = self.array_parent_id != self.job_id
         else:
             # No array info available (sacct historical data)
             self.is_array = False

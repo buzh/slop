@@ -475,3 +475,24 @@ class ProgressOverlay(u.WidgetWrap):
     def update_text(self, text):
         """Update the displayed text."""
         self.text_widget.set_text(text)
+
+
+class AccountUsageWidget(u.WidgetWrap):
+    """One row of an account-usage table: name + CPU hours, color-coded by usage."""
+
+    def __init__(self, account_data):
+        self.account_data = account_data
+        account = account_data.get('account', 'N/A')
+        used_hours = account_data.get('used', 0)
+
+        hours_str = f"{used_hours:,}" if used_hours >= 1000 else str(used_hours)
+        text = f"  {account:20s} │ {hours_str:>12s}"
+
+        if used_hours > 1000:
+            attr = 'success'
+        elif used_hours > 100:
+            attr = 'bg'
+        else:
+            attr = 'faded'
+
+        super().__init__(u.Text((attr, text)))

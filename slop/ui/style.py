@@ -1,506 +1,234 @@
+"""Declarative column layouts for job display.
+
+A layout is an ordered list of column entries: (field, sizing, weight, wrap).
+`get_display_attr` selects one based on job state + width category, then
+inserts the user_name and array_tasks columns at the right positions.
+"""
 from slop.slurm import is_running, is_ended, is_pending
 
 
-def get_display_attr(job, width=None, view_type=None):
-    """Get display attributes for a job based on its state, available width, and view context.
+PALETTE = [
+    # UI Chrome
+    ("header",           "white, bold", "dark blue"),
+    ("footer",           "white, bold", "dark red"),
+    ("jobheader",        "white, bold", "dark cyan"),
+    ("buttons",          "yellow",      "black"),
+    ("buttons_selected", "white",       "dark red"),
 
-    Args:
-        job: The job object
-        width: Available width in columns (None = use default/full)
-        view_type: Which view is displaying this job ('users', 'accounts', 'partitions', 'states')
+    # Default/Background
+    ("bg",               "white",       "black"),
+    ("normal",           "white",       "black"),
+    ("normal_selected",  "black",       "yellow"),
+    ("faded",            "light gray",  "black"),
 
-    Returns:
-        dict: Column configuration {field: (sizing, weight, wrap_mode)}
-    """
-    # Determine width category
+    # Job States (explicit naming)
+    ("state_running",    "light green", "black"),
+    ("state_pending",    "yellow",      "black"),
+    ("state_failed",     "light red",   "black"),
+
+    # Performance/Health (separate from job states)
+    ("success",          "light green", "black"),
+    ("warning",          "yellow",      "black"),
+    ("error",            "light red",   "black"),
+    ("info",             "light cyan",  "black"),
+
+    # Overlay dimming (applied to lower layers in overlay stack)
+    ("dim1",             "dark gray",   "black"),
+    ("dim2",             "black",       "black"),
+]
+
+
+W = 'weight'
+G = 'given'
+CLIP = 'clip'
+ELL = 'ellipsis'
+
+# Base layouts indexed by (state_category, size). 'user_name' and 'array_tasks'
+# are inserted as modifiers — never put them in here directly.
+LAYOUTS = {
+    'running': {
+        'narrow': [('job_id',     W, 4, CLIP),
+                   ('start_time', W, 4, CLIP),
+                   ('name',       W, 5, ELL)],
+        'medium': [('job_id',     W, 5, CLIP),
+                   ('start_time', W, 4, CLIP),
+                   ('end_time',   W, 3, CLIP),
+                   ('partition',  W, 4, CLIP),
+                   ('name',       W, 5, ELL)],
+        'wide':   [('job_id',     W, 5, CLIP),
+                   ('start_time', W, 4, CLIP),
+                   ('end_time',   W, 3, CLIP),
+                   ('account',    W, 3, CLIP),
+                   ('partition',  W, 4, CLIP),
+                   ('name',       W, 5, ELL),
+                   ('nodes',      W, 5, CLIP)],
+    },
+    'pending': {
+        'narrow': [('job_id',     W, 3, CLIP),
+                   ('wall_time',  W, 2, CLIP),
+                   ('name',       W, 5, ELL),
+                   ('reason',     W, 4, ELL)],
+        'medium': [('job_id',     W, 3, CLIP),
+                   ('submit_time',W, 3, CLIP),
+                   ('wall_time',  W, 2, CLIP),
+                   ('partition',  W, 3, CLIP),
+                   ('name',       W, 5, ELL),
+                   ('reason',     W, 4, ELL)],
+        'wide':   [('job_id',     W, 3, CLIP),
+                   ('submit_time',W, 3, CLIP),
+                   ('wall_time',  W, 2, CLIP),
+                   ('account',    W, 3, CLIP),
+                   ('partition',  W, 3, CLIP),
+                   ('name',       W, 5, ELL),
+                   ('reason',     W, 5, ELL)],
+    },
+    'ended': {
+        'narrow': [('job_state',  W, 2, CLIP),
+                   ('job_id',     W, 4, CLIP),
+                   ('name',       W, 5, ELL),
+                   ('exit_code',  W, 6, CLIP)],
+        'medium': [('job_state',  W, 3, CLIP),
+                   ('job_id',     W, 4, CLIP),
+                   ('wall_time',  W, 4, CLIP),
+                   ('partition',  W, 4, CLIP),
+                   ('name',       W, 5, ELL),
+                   ('exit_code',  W, 6, CLIP)],
+        'wide':   [('job_state',  W, 3, CLIP),
+                   ('job_id',     W, 4, CLIP),
+                   ('wall_time',  W, 4, CLIP),
+                   ('account',    W, 4, CLIP),
+                   ('partition',  W, 4, CLIP),
+                   ('name',       W, 5, ELL),
+                   ('exit_code',  W, 8, CLIP)],
+    },
+    'other': {
+        'narrow': [('job_state',  G, 3, CLIP),
+                   ('job_id',     W, 3, CLIP),
+                   ('name',       W, 5, ELL)],
+        'medium': [('job_state',  G, 3, CLIP),
+                   ('job_id',     W, 3, CLIP),
+                   ('wall_time',  W, 3, CLIP),
+                   ('partition',  W, 3, CLIP),
+                   ('name',       W, 5, ELL)],
+        'wide':   [('job_state',  G, 3, CLIP),
+                   ('job_id',     W, 3, CLIP),
+                   ('submit_time',W, 3, CLIP),
+                   ('wall_time',  W, 3, CLIP),
+                   ('account',    W, 3, CLIP),
+                   ('partition',  W, 3, CLIP),
+                   ('name',       W, 5, ELL),
+                   ('reason',     W, 5, ELL)],
+    },
+}
+
+# Array children only have narrow vs wide variants (medium folds into wide).
+CHILD_LAYOUTS = {
+    'running': {
+        'narrow': [('job_state',  W, 2, CLIP),
+                   ('task_id',    W, 2, CLIP),
+                   ('start_time', W, 3, CLIP),
+                   ('nodes',      W, 3, CLIP)],
+        'wide':   [('job_state',  W, 2, CLIP),
+                   ('task_id',    W, 2, CLIP),
+                   ('start_time', W, 3, CLIP),
+                   ('end_time',   W, 3, CLIP),
+                   ('nodes',      W, 3, CLIP),
+                   ('tres',       W, 4, CLIP)],
+    },
+    'ended': {
+        'narrow': [('job_state',  W, 2, CLIP),
+                   ('job_id',     W, 3, CLIP),
+                   ('task_id',    W, 2, CLIP),
+                   ('wall_time',  W, 3, CLIP),
+                   ('exit_code',  W, 4, CLIP)],
+        'wide':   [('job_state',  W, 2, CLIP),
+                   ('job_id',     W, 3, CLIP),
+                   ('task_id',    W, 2, CLIP),
+                   ('wall_time',  W, 3, CLIP),
+                   ('exit_code',  W, 4, CLIP),
+                   ('reason',     W, 4, ELL)],
+    },
+    'pending': {
+        'narrow': [('job_state',  W, 2, CLIP),
+                   ('task_id',    W, 2, CLIP),
+                   ('wall_time',  W, 3, CLIP),
+                   ('reason',     W, 4, ELL)],
+        'wide':   [('job_state',  W, 2, CLIP),
+                   ('task_id',    W, 2, CLIP),
+                   ('wall_time',  W, 3, CLIP),
+                   ('partition',  W, 3, CLIP),
+                   ('reason',     W, 4, ELL)],
+    },
+}
+
+USER_COL = ('user_name', W, 3, CLIP)
+ARRAY_TASKS_COL = ('array_tasks', W, 2, CLIP)
+
+
+def _size(width):
     if width is None:
-        size = 'wide'
-    elif width < 90:
-        size = 'narrow'
-    elif width < 130:
-        size = 'medium'
-    else:
-        size = 'wide'
+        return 'wide'
+    if width < 90:
+        return 'narrow'
+    if width < 130:
+        return 'medium'
+    return 'wide'
 
-    # Determine if we should show user_name (when not in users view)
-    show_user = view_type and view_type != 'users'
 
-    if job.is_array_parent:
-        # Array parents should match the layout of their state (running/pending/ended)
-        # with array_tasks column added
-        if job.has_running_children or is_running(job):
-            # Match running job layout exactly (no array_tasks to maintain alignment)
-            if size == 'narrow':
-                if show_user:
-                    return {
-                        'job_id': ('weight', 4, 'clip'),
-                        'user_name': ('weight', 3, 'clip'),
-                        'start_time': ('weight', 4, 'clip'),
-                        'name': ('weight', 5, 'ellipsis'),
-                    }
-                else:
-                    return {
-                        'job_id': ('weight', 4, 'clip'),
-                        'start_time': ('weight', 4, 'clip'),
-                        'name': ('weight', 5, 'ellipsis'),
-                    }
-            elif size == 'medium':
-                if show_user:
-                    return {
-                        'job_id': ('weight', 5, 'clip'),
-                        'user_name': ('weight', 3, 'clip'),
-                        'start_time': ('weight', 4, 'clip'),
-                        'end_time': ('weight', 3, 'clip'),
-                        'partition': ('weight', 4, 'clip'),
-                        'name': ('weight', 5, 'ellipsis'),
-                    }
-                else:
-                    return {
-                        'job_id': ('weight', 5, 'clip'),
-                        'start_time': ('weight', 4, 'clip'),
-                        'end_time': ('weight', 3, 'clip'),
-                        'partition': ('weight', 4, 'clip'),
-                        'name': ('weight', 5, 'ellipsis'),
-                    }
-            else:  # wide
-                if show_user:
-                    return {
-                        'job_id': ('weight', 5, 'clip'),
-                        'user_name': ('weight', 3, 'clip'),
-                        'start_time': ('weight', 4, 'clip'),
-                        'end_time': ('weight', 3, 'clip'),
-                        'account': ('weight', 3, 'clip'),
-                        'partition': ('weight', 4, 'clip'),
-                        'name': ('weight', 5, 'ellipsis'),
-                        'nodes': ('weight', 5, 'clip'),
-                    }
-                else:
-                    return {
-                        'job_id': ('weight', 5, 'clip'),
-                        'start_time': ('weight', 4, 'clip'),
-                        'end_time': ('weight', 3, 'clip'),
-                        'account': ('weight', 3, 'clip'),
-                        'partition': ('weight', 4, 'clip'),
-                        'name': ('weight', 5, 'ellipsis'),
-                        'nodes': ('weight', 5, 'clip'),
-                    }
-        elif is_pending(job):
-            # Match pending job layout
-            if size == 'narrow':
-                if show_user:
-                    return {
-                        'job_id': ('weight', 3, 'clip'),
-                        'user_name': ('weight', 3, 'clip'),
-                        'array_tasks': ('weight', 2, 'clip'),
-                        'wall_time': ('weight', 2, 'clip'),
-                        'name': ('weight', 5, 'ellipsis'),
-                        'reason': ('weight', 4, 'ellipsis'),
-                    }
-                else:
-                    return {
-                        'job_id': ('weight', 3, 'clip'),
-                        'array_tasks': ('weight', 2, 'clip'),
-                        'wall_time': ('weight', 2, 'clip'),
-                        'name': ('weight', 5, 'ellipsis'),
-                        'reason': ('weight', 4, 'ellipsis'),
-                    }
-            elif size == 'medium':
-                if show_user:
-                    return {
-                        'job_id': ('weight', 3, 'clip'),
-                        'user_name': ('weight', 3, 'clip'),
-                        'array_tasks': ('weight', 2, 'clip'),
-                        'submit_time': ('weight', 3, 'clip'),
-                        'wall_time': ('weight', 2, 'clip'),
-                        'partition': ('weight', 3, 'clip'),
-                        'name': ('weight', 5, 'ellipsis'),
-                        'reason': ('weight', 4, 'ellipsis'),
-                    }
-                else:
-                    return {
-                        'job_id': ('weight', 3, 'clip'),
-                        'array_tasks': ('weight', 2, 'clip'),
-                        'submit_time': ('weight', 3, 'clip'),
-                        'wall_time': ('weight', 2, 'clip'),
-                        'partition': ('weight', 3, 'clip'),
-                        'name': ('weight', 5, 'ellipsis'),
-                        'reason': ('weight', 4, 'ellipsis'),
-                    }
-            else:  # wide
-                if show_user:
-                    return {
-                        'job_id': ('weight', 3, 'clip'),
-                        'user_name': ('weight', 3, 'clip'),
-                        'array_tasks': ('weight', 2, 'clip'),
-                        'submit_time': ('weight', 3, 'clip'),
-                        'wall_time': ('weight', 2, 'clip'),
-                        'account': ('weight', 3, 'clip'),
-                        'partition': ('weight', 3, 'clip'),
-                        'name': ('weight', 5, 'ellipsis'),
-                        'reason': ('weight', 5, 'ellipsis'),
-                    }
-                else:
-                    return {
-                        'job_id': ('weight', 3, 'clip'),
-                        'array_tasks': ('weight', 2, 'clip'),
-                        'submit_time': ('weight', 3, 'clip'),
-                        'wall_time': ('weight', 2, 'clip'),
-                        'account': ('weight', 3, 'clip'),
-                        'partition': ('weight', 3, 'clip'),
-                        'name': ('weight', 5, 'ellipsis'),
-                        'reason': ('weight', 5, 'ellipsis'),
-                    }
-        else:
-            # Ended or other states
-            if size == 'narrow':
-                if show_user:
-                    return {
-                        'job_state': ('weight', 2, 'clip'),
-                        'job_id': ('weight', 4, 'clip'),
-                        'user_name': ('weight', 3, 'clip'),
-                        'array_tasks': ('weight', 2, 'clip'),
-                        'name': ('weight', 5, 'ellipsis'),
-                        'exit_code': ('weight', 6, 'clip'),
-                    }
-                else:
-                    return {
-                        'job_state': ('weight', 2, 'clip'),
-                        'job_id': ('weight', 4, 'clip'),
-                        'array_tasks': ('weight', 2, 'clip'),
-                        'name': ('weight', 5, 'ellipsis'),
-                        'exit_code': ('weight', 6, 'clip'),
-                    }
-            elif size == 'medium':
-                if show_user:
-                    return {
-                        'job_state': ('weight', 3, 'clip'),
-                        'job_id': ('weight', 4, 'clip'),
-                        'user_name': ('weight', 3, 'clip'),
-                        'array_tasks': ('weight', 2, 'clip'),
-                        'wall_time': ('weight', 4, 'clip'),
-                        'partition': ('weight', 4, 'clip'),
-                        'name': ('weight', 5, 'ellipsis'),
-                        'exit_code': ('weight', 6, 'clip'),
-                    }
-                else:
-                    return {
-                        'job_state': ('weight', 3, 'clip'),
-                        'job_id': ('weight', 4, 'clip'),
-                        'array_tasks': ('weight', 2, 'clip'),
-                        'wall_time': ('weight', 4, 'clip'),
-                        'partition': ('weight', 4, 'clip'),
-                        'name': ('weight', 5, 'ellipsis'),
-                        'exit_code': ('weight', 6, 'clip'),
-                    }
-            else:  # wide
-                if show_user:
-                    return {
-                        'job_state': ('weight', 3, 'clip'),
-                        'job_id': ('weight', 4, 'clip'),
-                        'user_name': ('weight', 3, 'clip'),
-                        'array_tasks': ('weight', 2, 'clip'),
-                        'wall_time': ('weight', 4, 'clip'),
-                        'account': ('weight', 4, 'clip'),
-                        'partition': ('weight', 4, 'clip'),
-                        'name': ('weight', 5, 'ellipsis'),
-                        'exit_code': ('weight', 8, 'clip'),
-                    }
-                else:
-                    return {
-                        'job_state': ('weight', 3, 'clip'),
-                        'job_id': ('weight', 4, 'clip'),
-                        'array_tasks': ('weight', 2, 'clip'),
-                        'wall_time': ('weight', 4, 'clip'),
-                        'account': ('weight', 4, 'clip'),
-                        'partition': ('weight', 4, 'clip'),
-                        'name': ('weight', 5, 'ellipsis'),
-                        'exit_code': ('weight', 8, 'clip'),
-                    }
+def _category(job):
+    if is_running(job) or job.has_running_children:
+        return 'running'
+    if is_pending(job):
+        return 'pending'
+    if is_ended(job):
+        return 'ended'
+    return 'other'
 
-    elif job.is_array_child:
-        # Array children show based on state, similar to regular jobs
-        if is_running(job):
-            if size == 'narrow':
-                return {
-                    'job_state': ('weight', 2, 'clip'),
-                    'task_id': ('weight', 2, 'clip'),
-                    'start_time': ('weight', 3, 'clip'),
-                    'nodes': ('weight', 3, 'clip'),
-                }
-            else:
-                return {
-                    'job_state': ('weight', 2, 'clip'),
-                    'task_id': ('weight', 2, 'clip'),
-                    'start_time': ('weight', 3, 'clip'),
-                    'end_time': ('weight', 3, 'clip'),
-                    'nodes': ('weight', 3, 'clip'),
-                    'tres': ('weight', 4, 'clip'),
-                }
-        elif is_ended(job):
-            if size == 'narrow':
-                return {
-                    'job_state': ('weight', 2, 'clip'),
-                    'job_id': ('weight', 3, 'clip'),
-                    'task_id': ('weight', 2, 'clip'),
-                    'wall_time': ('weight', 3, 'clip'),
-                    'exit_code': ('weight', 4, 'clip'),
-                }
-            else:
-                return {
-                    'job_state': ('weight', 2, 'clip'),
-                    'job_id': ('weight', 3, 'clip'),
-                    'task_id': ('weight', 2, 'clip'),
-                    'wall_time': ('weight', 3, 'clip'),
-                    'exit_code': ('weight', 4, 'clip'),
-                    'reason': ('weight', 4, 'ellipsis'),
-                }
-        else:  # pending or other
-            if size == 'narrow':
-                return {
-                    'job_state': ('weight', 2, 'clip'),
-                    'task_id': ('weight', 2, 'clip'),
-                    'wall_time': ('weight', 3, 'clip'),
-                    'reason': ('weight', 4, 'ellipsis'),
-                }
-            else:
-                return {
-                    'job_state': ('weight', 2, 'clip'),
-                    'task_id': ('weight', 2, 'clip'),
-                    'wall_time': ('weight', 3, 'clip'),
-                    'partition': ('weight', 3, 'clip'),
-                    'reason': ('weight', 4, 'ellipsis'),
-                }
 
-    elif is_running(job) or job.has_running_children:
-        if size == 'narrow':
-            if show_user:
-                return {
-                    'job_id': ('weight', 4, 'clip'),
-                    'user_name': ('weight', 3, 'clip'),
-                    'start_time': ('weight', 4, 'clip'),
-                    'name': ('weight', 5, 'ellipsis'),
-                }
-            else:
-                return {
-                    'job_id': ('weight', 4, 'clip'),
-                    'start_time': ('weight', 4, 'clip'),
-                    'name': ('weight', 5, 'ellipsis'),
-                }
-        elif size == 'medium':
-            if show_user:
-                return {
-                    'job_id': ('weight', 5, 'clip'),
-                    'user_name': ('weight', 3, 'clip'),
-                    'start_time': ('weight', 4, 'clip'),
-                    'end_time': ('weight', 3, 'clip'),
-                    'partition': ('weight', 4, 'clip'),
-                    'name': ('weight', 5, 'ellipsis'),
-                }
-            else:
-                return {
-                    'job_id': ('weight', 5, 'clip'),
-                    'start_time': ('weight', 4, 'clip'),
-                    'end_time': ('weight', 3, 'clip'),
-                    'partition': ('weight', 4, 'clip'),
-                    'name': ('weight', 5, 'ellipsis'),
-                }
-        else:  # wide
-            if show_user:
-                return {
-                    'job_id': ('weight', 5, 'clip'),
-                    'user_name': ('weight', 3, 'clip'),
-                    'start_time': ('weight', 4, 'clip'),
-                    'end_time': ('weight', 3, 'clip'),
-                    'account': ('weight', 3, 'clip'),
-                    'partition': ('weight', 4, 'clip'),
-                    'name': ('weight', 5, 'ellipsis'),
-                    'nodes': ('weight', 5, 'clip'),
-                }
-            else:
-                return {
-                    'job_id': ('weight', 5, 'clip'),
-                    'start_time': ('weight', 4, 'clip'),
-                    'end_time': ('weight', 3, 'clip'),
-                    'account': ('weight', 3, 'clip'),
-                    'partition': ('weight', 4, 'clip'),
-                    'name': ('weight', 5, 'ellipsis'),
-                    'nodes': ('weight', 5, 'clip'),
-                }
+def _child_category(job):
+    if is_running(job):
+        return 'running'
+    if is_ended(job):
+        return 'ended'
+    return 'pending'  # children fold pending + other into pending
 
-    elif is_ended(job):
-        if size == 'narrow':
-            if show_user:
-                return {
-                    'job_state': ('weight', 2, 'clip'),
-                    'job_id': ('weight', 4, 'clip'),
-                    'user_name': ('weight', 3, 'clip'),
-                    'name': ('weight', 5, 'ellipsis'),
-                    'exit_code': ('weight', 6, 'clip'),
-                }
-            else:
-                return {
-                    'job_state': ('weight', 2, 'clip'),
-                    'job_id': ('weight', 4, 'clip'),
-                    'name': ('weight', 5, 'ellipsis'),
-                    'exit_code': ('weight', 6, 'clip'),
-                }
-        elif size == 'medium':
-            if show_user:
-                return {
-                    'job_state': ('weight', 3, 'clip'),
-                    'job_id': ('weight', 4, 'clip'),
-                    'user_name': ('weight', 3, 'clip'),
-                    'wall_time': ('weight', 4, 'clip'),
-                    'partition': ('weight', 4, 'clip'),
-                    'name': ('weight', 5, 'ellipsis'),
-                    'exit_code': ('weight', 6, 'clip'),
-                }
-            else:
-                return {
-                    'job_state': ('weight', 3, 'clip'),
-                    'job_id': ('weight', 4, 'clip'),
-                    'wall_time': ('weight', 4, 'clip'),
-                    'partition': ('weight', 4, 'clip'),
-                    'name': ('weight', 5, 'ellipsis'),
-                    'exit_code': ('weight', 6, 'clip'),
-                }
-        else:  # wide
-            if show_user:
-                return {
-                    'job_state': ('weight', 3, 'clip'),
-                    'job_id': ('weight', 4, 'clip'),
-                    'user_name': ('weight', 3, 'clip'),
-                    'wall_time': ('weight', 4, 'clip'),
-                    'account': ('weight', 4, 'clip'),
-                    'partition': ('weight', 4, 'clip'),
-                    'name': ('weight', 5, 'ellipsis'),
-                    'exit_code': ('weight', 8, 'clip'),
-                }
-            else:
-                return {
-                    'job_state': ('weight', 3, 'clip'),
-                    'job_id': ('weight', 4, 'clip'),
-                    'wall_time': ('weight', 4, 'clip'),
-                    'account': ('weight', 4, 'clip'),
-                    'partition': ('weight', 4, 'clip'),
-                    'name': ('weight', 5, 'ellipsis'),
-                    'exit_code': ('weight', 8, 'clip'),
-                }
 
-    elif is_pending(job):
-        if size == 'narrow':
-            if show_user:
-                return {
-                    'job_id': ('weight', 3, 'clip'),
-                    'user_name': ('weight', 3, 'clip'),
-                    'wall_time': ('weight', 2, 'clip'),
-                    'name': ('weight', 5, 'ellipsis'),
-                    'reason': ('weight', 4, 'ellipsis'),
-                }
-            else:
-                return {
-                    'job_id': ('weight', 3, 'clip'),
-                    'wall_time': ('weight', 2, 'clip'),
-                    'name': ('weight', 5, 'ellipsis'),
-                    'reason': ('weight', 4, 'ellipsis'),
-                }
-        elif size == 'medium':
-            if show_user:
-                return {
-                    'job_id': ('weight', 3, 'clip'),
-                    'user_name': ('weight', 3, 'clip'),
-                    'submit_time': ('weight', 3, 'clip'),
-                    'wall_time': ('weight', 2, 'clip'),
-                    'partition': ('weight', 3, 'clip'),
-                    'name': ('weight', 5, 'ellipsis'),
-                    'reason': ('weight', 4, 'ellipsis'),
-                }
-            else:
-                return {
-                    'job_id': ('weight', 3, 'clip'),
-                    'submit_time': ('weight', 3, 'clip'),
-                    'wall_time': ('weight', 2, 'clip'),
-                    'partition': ('weight', 3, 'clip'),
-                    'name': ('weight', 5, 'ellipsis'),
-                    'reason': ('weight', 4, 'ellipsis'),
-                }
-        else:  # wide
-            if show_user:
-                return {
-                    'job_id': ('weight', 3, 'clip'),
-                    'user_name': ('weight', 3, 'clip'),
-                    'submit_time': ('weight', 3, 'clip'),
-                    'wall_time': ('weight', 2, 'clip'),
-                    'account': ('weight', 3, 'clip'),
-                    'partition': ('weight', 3, 'clip'),
-                    'name': ('weight', 5, 'ellipsis'),
-                    'reason': ('weight', 5, 'ellipsis'),
-                }
-            else:
-                return {
-                    'job_id': ('weight', 3, 'clip'),
-                    'submit_time': ('weight', 3, 'clip'),
-                    'wall_time': ('weight', 2, 'clip'),
-                    'account': ('weight', 3, 'clip'),
-                    'partition': ('weight', 3, 'clip'),
-                    'name': ('weight', 5, 'ellipsis'),
-                    'reason': ('weight', 5, 'ellipsis'),
-                }
+def _insert_after(layout, anchor, entry):
+    out = []
+    for col in layout:
+        out.append(col)
+        if col[0] == anchor:
+            out.append(entry)
+    return out
 
-    else:
-        if size == 'narrow':
-            if show_user:
-                return {
-                    'job_state': ('given', 3, 'clip'),
-                    'job_id': ('weight', 3, 'clip'),
-                    'user_name': ('weight', 3, 'clip'),
-                    'name': ('weight', 5, 'ellipsis'),
-                }
-            else:
-                return {
-                    'job_state': ('given', 3, 'clip'),
-                    'job_id': ('weight', 3, 'clip'),
-                    'name': ('weight', 5, 'ellipsis'),
-                }
-        elif size == 'medium':
-            if show_user:
-                return {
-                    'job_state': ('given', 3, 'clip'),
-                    'job_id': ('weight', 3, 'clip'),
-                    'user_name': ('weight', 3, 'clip'),
-                    'wall_time': ('weight', 3, 'clip'),
-                    'partition': ('weight', 3, 'clip'),
-                    'name': ('weight', 5, 'ellipsis'),
-                }
-            else:
-                return {
-                    'job_state': ('given', 3, 'clip'),
-                    'job_id': ('weight', 3, 'clip'),
-                    'wall_time': ('weight', 3, 'clip'),
-                    'partition': ('weight', 3, 'clip'),
-                    'name': ('weight', 5, 'ellipsis'),
-                }
-        else:  # wide
-            if show_user:
-                return {
-                    'job_state': ('given', 3, 'clip'),
-                    'job_id': ('weight', 3, 'clip'),
-                    'user_name': ('weight', 3, 'clip'),
-                    'submit_time': ('weight', 3, 'clip'),
-                    'wall_time': ('weight', 3, 'clip'),
-                    'account': ('weight', 3, 'clip'),
-                    'partition': ('weight', 3, 'clip'),
-                    'name': ('weight', 5, 'ellipsis'),
-                    'reason': ('weight', 5, 'ellipsis'),
-                }
-            else:
-                return {
-                    'job_state': ('given', 3, 'clip'),
-                    'job_id': ('weight', 3, 'clip'),
-                    'submit_time': ('weight', 3, 'clip'),
-                    'wall_time': ('weight', 3, 'clip'),
-                    'account': ('weight', 3, 'clip'),
-                    'partition': ('weight', 3, 'clip'),
-                    'name': ('weight', 5, 'ellipsis'),
-                    'reason': ('weight', 5, 'ellipsis'),
-                }
+
+def get_display_attr(job, width=None, view_type=None):
+    """Get column layout for a job.
+
+    Returns dict {field: (sizing, weight, wrap_mode)} suitable for urwid.Columns.
+    """
+    size = _size(width)
+    show_user = bool(view_type and view_type != 'users')
+
+    if job.is_array_child:
+        child_size = 'narrow' if size == 'narrow' else 'wide'
+        layout = CHILD_LAYOUTS[_child_category(job)][child_size]
+        return {f: (s, w, m) for f, s, w, m in layout}
+
+    category = _category(job)
+    # Array parents collapse 'other' into 'ended' layout (preserves prior behavior)
+    if job.is_array_parent and category == 'other':
+        category = 'ended'
+
+    layout = LAYOUTS[category][size]
+
+    if show_user:
+        layout = _insert_after(layout, 'job_id', USER_COL)
+
+    # Array parents get an array_tasks column except in running state, where
+    # the layout deliberately matches non-array running jobs for alignment.
+    if job.is_array_parent and category != 'running':
+        anchor = 'user_name' if show_user else 'job_id'
+        layout = _insert_after(layout, anchor, ARRAY_TASKS_COL)
+
+    return {f: (s, w, m) for f, s, w, m in layout}

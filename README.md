@@ -5,6 +5,10 @@ https://github.com/user-attachments/assets/e1522f06-295f-4b20-b5cd-76cb24a0c9f1
 # slop
 A `top`-like utility for the Slurm HPC batch job scheduler
 
+# April 17th, 2026: v1.1.5 is released
+
+Good news, everyone! Slop 1.1.5 is here with loads of optimizations and bug fixes, and
+we also provide RPM files for RHEL/Rocky/Alma 9 for your convenience.
 
 # April 12th, 2026: Version 1.1 is released!
 

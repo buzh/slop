@@ -10,6 +10,11 @@ from slop.slurm import (
     job_state_pending,
 )
 from slop.utils import format_duration, nice_tres, smart_truncate
+from slop.ui.constants import (
+    LARGE_GROUP_AUTO_COLLAPSE,
+    MAX_PENDING_CHILDREN_INLINE,
+    SCREEN_FILL_RATIO,
+)
 from slop.ui.widgets import (
     ChildJobWidget,
     ArrayPendWidget,
@@ -23,13 +28,23 @@ from slop.ui.overlays import JobInfoOverlay
 class TwoColumnJobView(u.WidgetWrap):
     """Base class for two-column views: entity list on left, jobs on right.
 
-    Subclasses must define:
-        - entity_attr: str - attribute name on job (e.g., 'user_name', 'account')
+    Subclasses (or `make_view()`) configure these class attributes:
+        - entity_attr: str - attribute name on job (e.g., 'user', 'account')
         - left_title: str - title for left panel
         - right_title_template: str - template for right panel title (use {entity})
-        - get_entity_table() - returns dict of {entity_name: {'njobs': int, 'running': int, 'pending': int, 'jobs': [Job]}}
-        - create_entity_widget(entity_name, njobs, running, pending) - creates widget for left panel item
+        - view_type: str - identifier for layout selection ('users', 'accounts', ...)
+        - table_attr: str - attribute on `self.jobs` holding the entity table
+
+    Override `get_entity_table()` or `create_entity_widget()` only if the
+    default attribute-driven behavior isn't enough.
     """
+
+    # Defaults used by the factory-generated views; subclasses may override.
+    entity_attr = None
+    left_title = None
+    right_title_template = None
+    view_type = 'users'
+    table_attr = None
 
     # Sort keys map to column positions (set dynamically based on visible columns)
     # This will be populated when the header is built
@@ -92,80 +107,72 @@ class TwoColumnJobView(u.WidgetWrap):
         if self.main_screen.overlay_showing:
             return key
 
-        # 'h' key: open history for selected user (only in Users view)
-        if key == 'h' and self.entity_attr == 'user':
-            # Use the currently selected entity (tracked in self.selected_entity)
-            entity_name = self.selected_entity
-            if entity_name:
-                # Show "please wait" overlay immediately
-                self.main_screen.open_overlay(GenericOverlayText(
-                    self.main_screen,
-                    f"Loading history for {entity_name}...\n\nFetching account usage data..."
-                ))
-                self.main_screen.loop.draw_screen()
-
-                # Fetch sreport data for this user
-                result = self.main_screen.sreport_fetcher.fetch_user_utilization(entity_name)
-
-                # Close the overlay
-                self.main_screen.close_overlay()
-
-                if result:
-                    self.main_screen.handle_search_result(result, 'user', entity_name)
-                else:
-                    # Show error overlay if fetch failed
-                    self.main_screen.open_overlay(GenericOverlayText(
-                        self.main_screen,
-                        f"Failed to fetch data for {entity_name}"
-                    ))
-                return None
-            # If no entity selected, don't consume the key
-            return super().keypress(size, key)
-
-        # 'e' key: toggle collapse/expand of similar job groups
-        if key == 'e' and self.w.get_focus_column() == 1:
-            focus_w, _ = self.jobwalker.get_focus()
-            # Check if focused on an ellipsis widget
-            if hasattr(focus_w, "group_key"):
-                # Toggle this group
-                group_key = focus_w.group_key
-                self.collapsed_groups[group_key] = not self.collapsed_groups.get(group_key, True)
-                self.draw_jobs()
-            elif hasattr(focus_w, "jobid"):
-                # Toggle the group containing this job
-                job = self.jobs.job_index.get(focus_w.jobid)
-                if job:
-                    group_key = self.get_job_group_key(job)
-                    self.collapsed_groups[group_key] = not self.collapsed_groups.get(group_key, True)
-                    self.draw_jobs()
-            return None
-
-        # Space/Enter on job list: expand array parent or show job details
-        if (key == ' ' or key == 'enter') and self.w.get_focus_column() == 1:
-            focus_w, _ = self.jobwalker.get_focus()
-            if hasattr(focus_w, "jobid"):
-                job = self.jobs.job_index.get(focus_w.jobid)
-                if job and job.is_array_parent:
-                    # Array parent: expand to show children
-                    job.toggle_expand()
-                    self.draw_jobs()
-                elif job:
-                    # Regular job or array child: show details
-                    self.main_screen.open_overlay(JobInfoOverlay(job, self.main_screen))
-            return None
-
-        # Number keys: sort by column
-        if key in self.SORT_KEYS and self.w.get_focus_column() == 1:
-            selected_col = self.SORT_KEYS[key]
-            if self.sort_col == selected_col:
-                self.sort_reverse = not self.sort_reverse
-            else:
-                self.sort_col = selected_col
-                self.sort_reverse = True
-            self.draw_jobs()
-            return None
-
+        in_job_col = self.w.get_focus_column() == 1
+        if key == 'h' and self.entity_attr == 'user' and self.selected_entity:
+            return self._key_history()
+        if key == 'e' and in_job_col:
+            return self._key_toggle_group()
+        if (key == ' ' or key == 'enter') and in_job_col:
+            return self._key_expand_or_details()
+        if key in self.SORT_KEYS and in_job_col:
+            return self._key_sort(key)
         return super().keypress(size, key)
+
+    def _key_history(self):
+        entity_name = self.selected_entity
+        self.main_screen.open_overlay(GenericOverlayText(
+            self.main_screen,
+            f"Loading history for {entity_name}...\n\nFetching account usage data..."
+        ))
+        self.main_screen.loop.draw_screen()
+        result = self.main_screen.sreport_fetcher.fetch_user_utilization(entity_name)
+        self.main_screen.close_overlay()
+        if result:
+            self.main_screen.handle_search_result(result, 'user', entity_name)
+        else:
+            self.main_screen.open_overlay(GenericOverlayText(
+                self.main_screen,
+                f"Failed to fetch data for {entity_name}"
+            ))
+        return None
+
+    def _key_toggle_group(self):
+        focus_w, _ = self.jobwalker.get_focus()
+        if hasattr(focus_w, "group_key"):
+            group_key = focus_w.group_key
+        elif hasattr(focus_w, "jobid"):
+            job = self.jobs.job_index.get(focus_w.jobid)
+            group_key = self.get_job_group_key(job) if job else None
+        else:
+            group_key = None
+        if group_key is not None:
+            self.collapsed_groups[group_key] = not self.collapsed_groups.get(group_key, True)
+            self.draw_jobs()
+        return None
+
+    def _key_expand_or_details(self):
+        focus_w, _ = self.jobwalker.get_focus()
+        if not hasattr(focus_w, "jobid"):
+            return None
+        job = self.jobs.job_index.get(focus_w.jobid)
+        if not job:
+            return None
+        if job.is_array_parent:
+            job.toggle_expand()
+            self.draw_jobs()
+        else:
+            self.main_screen.open_overlay(JobInfoOverlay(job, self.main_screen))
+        return None
+
+    def _key_sort(self, key):
+        selected_col = self.SORT_KEYS[key]
+        if self.sort_col == selected_col:
+            self.sort_reverse = not self.sort_reverse
+        else:
+            self.sort_col = selected_col
+            self.sort_reverse = True
+        self.draw_jobs()
+        return None
 
     def modified(self):
         # Entity selection changed
@@ -258,100 +265,75 @@ class TwoColumnJobView(u.WidgetWrap):
     def build_job_widgets(self, joblist, label=None):
         if not joblist:
             return []
-
-        # Group similar jobs first to see if there's anything to display
         groups = self.group_similar_jobs(joblist)
-
-        # If no groups after filtering (e.g., all array_children), return empty
         if not groups:
             return []
 
         widgets = []
-
-        # Add section header with modern style
         if label:
-            # Calculate separator width based on available space in right panel
-            # Right panel is 75% of screen width
-            available_width = getattr(self.main_screen, 'width', 120)
-            right_panel_width = int(available_width * 0.75) - 5  # Account for borders
-            label_upper = label.upper()
-            header_text = f"═══ {label_upper} "
-            remaining_width = max(right_panel_width - len(header_text), 20)
-            separator = "═" * remaining_width
-            widgets.append(u.AttrMap(u.Text(f"{header_text}{separator}"), 'jobheader'))
+            widgets.append(self._build_section_header(label))
 
-        # Find a representative job for this category (prefer non-array-parent)
-        representative_job = None
-        for job in joblist:
-            if not job.is_array_parent:
-                representative_job = job
-                break
-        if not representative_job:
-            representative_job = joblist[0]
-
-        # Add inline header for this category
+        representative_job = next(
+            (j for j in joblist if not j.is_array_parent),
+            joblist[0],
+        )
         widgets.append(self.build_category_header(representative_job))
 
-        # Build job widgets for each group
         for group_key, group_jobs in groups.items():
-            group_count = len(group_jobs)
+            widgets.extend(self._build_group(group_key, group_jobs))
+        return widgets
 
-            # Check if user has explicitly set collapse state for this group
-            if group_key in self.collapsed_groups:
-                is_collapsed = self.collapsed_groups[group_key]
+    def _build_section_header(self, label):
+        available_width = getattr(self.main_screen, 'width', 120)
+        right_panel_width = int(available_width * 0.75) - 5
+        header_text = f"═══ {label.upper()} "
+        separator = "═" * max(right_panel_width - len(header_text), 20)
+        return u.AttrMap(u.Text(f"{header_text}{separator}"), 'jobheader')
+
+    def _build_group(self, group_key, group_jobs):
+        group_count = len(group_jobs)
+        if group_key in self.collapsed_groups:
+            is_collapsed = self.collapsed_groups[group_key]
+        else:
+            is_collapsed = group_count > LARGE_GROUP_AUTO_COLLAPSE
+
+        if is_collapsed and group_count > self.jobs_per_group:
+            jobs_to_show = group_jobs[:self.jobs_per_group]
+            remaining = group_count - self.jobs_per_group
+        else:
+            jobs_to_show = group_jobs
+            remaining = 0
+
+        widgets = []
+        for job in jobs_to_show:
+            widgets.append(job.widget)
+            if job.is_array_parent and not job.array_collapsed_widget:
+                widgets.extend(self._build_array_children(job))
+
+        if remaining > 0:
+            expand_text = f"  ... and {remaining} more similar jobs (press 'e' to expand)"
+            widgets.append(ExpandableGroupMarker(expand_text, group_key))
+        return widgets
+
+    def _build_array_children(self, parent_job):
+        children = sorted(parent_job.array_children, key=lambda j: j.job_id)
+        running_widgets = []
+        pending_children = []
+        for child in children:
+            if is_running(child):
+                running_widgets.append(ChildJobWidget(child))
             else:
-                # Auto-collapse only very large groups (>30 jobs)
-                is_collapsed = group_count > 30
+                pending_children.append(child)
 
-            # Determine how many to show when collapsed
-            if is_collapsed and group_count > self.jobs_per_group:
-                jobs_to_show = group_jobs[:self.jobs_per_group]
-                remaining = group_count - self.jobs_per_group
-            else:
-                jobs_to_show = group_jobs
-                remaining = 0
-
-            # Build widgets for visible jobs
-            for job in jobs_to_show:
-                if job.is_array_parent:
-                    widgets.append(job.widget)
-                    if not job.array_collapsed_widget:
-                        children = sorted(job.array_children, key=lambda j: j.job_id)
-                        running_children = []
-                        pending_children = []
-
-                        # Categorize children
-                        for child in children:
-                            if is_running(child):
-                                running_children.append(ChildJobWidget(child))
-                            else:
-                                pending_children.append(child)
-
-                        # Show all running children
-                        if running_children:
-                            widgets.extend(running_children)
-
-                        # Show pending children - be generous with space
-                        pending_count = len(pending_children)
-                        if pending_count > 0:
-                            # Show at least one, or all if there are few or plenty of screen space
-                            # We'll show all for small counts, otherwise show first + summary
-                            if pending_count <= 10:
-                                # Show all pending if 10 or fewer (increased from 3)
-                                for child in pending_children:
-                                    widgets.append(ChildJobWidget(child))
-                            else:
-                                # Show first pending child, then summary for the rest
-                                widgets.append(ChildJobWidget(pending_children[0]))
-                                widgets.append(ArrayPendWidget(pending_count - 1))
-                else:
-                    widgets.append(job.widget)
-
-            # Add expand marker if collapsed
-            if remaining > 0:
-                expand_text = f"  ... and {remaining} more similar jobs (press 'e' to expand)"
-                widgets.append(ExpandableGroupMarker(expand_text, group_key))
-
+        widgets = list(running_widgets)
+        pending_count = len(pending_children)
+        if pending_count == 0:
+            return widgets
+        if pending_count <= MAX_PENDING_CHILDREN_INLINE:
+            widgets.extend(ChildJobWidget(c) for c in pending_children)
+        else:
+            widgets.append(ChildJobWidget(pending_children[0]))
+            widgets.append(ArrayPendWidget(pending_count - 1))
         return widgets
 
     def restore_job_focus(self):
@@ -487,38 +469,10 @@ class TwoColumnJobView(u.WidgetWrap):
             u.disconnect_signal(self.jobwalker, 'modified', self.modified)
             self.jobwalker.clear()
 
-            # Build widgets
+            # Build widgets (Running > Pending > Ended > Other)
             job_sets = self.categorize_jobs(jobtable)
-
-            jobwalker_widgets = []
-            # Priority order: Running > Pending > Ended > Other
-            for job_category in ["Running", "Pending", "Ended", "Other"]:
-                jobwalker_widgets.extend(self.build_job_widgets(job_sets[job_category], label=job_category))
-
-            # If we have screen space left and there are collapsed groups, expand them to fill screen
-            if hasattr(self.main_screen, 'height'):
-                available_lines = self.main_screen.height - 5  # Reserve for header/footer
-                current_widget_count = len(jobwalker_widgets)
-
-                # If we have empty space, aggressively expand collapsed groups to fill it
-                if current_widget_count < available_lines * 0.9:
-                    # Find collapsed groups that could be expanded
-                    expandable = []
-                    for widget in jobwalker_widgets:
-                        if isinstance(widget, ExpandableGroupMarker):
-                            expandable.append(widget.group_key)
-
-                    # Auto-expand groups to fill available space
-                    if expandable:
-                        # Expand all groups that fit in available space
-                        for group_key in expandable:
-                            if group_key in self.collapsed_groups:
-                                self.collapsed_groups[group_key] = False
-
-                        # Rebuild with expanded groups
-                        jobwalker_widgets = []
-                        for job_category in ["Running", "Pending", "Ended", "Other"]:
-                            jobwalker_widgets.extend(self.build_job_widgets(job_sets[job_category], label=job_category))
+            jobwalker_widgets = self._build_all_categories(job_sets)
+            jobwalker_widgets = self._auto_expand_to_fill(jobwalker_widgets, job_sets)
 
             self.jobwalker.extend(jobwalker_widgets)
             self.jw.set_title(self.right_title_template.format(entity=self.selected_entity))
@@ -526,6 +480,29 @@ class TwoColumnJobView(u.WidgetWrap):
             u.connect_signal(self.jobwalker, 'modified', self.modified)
         finally:
             self._drawing = False
+
+    def _build_all_categories(self, job_sets):
+        widgets = []
+        for category in ["Running", "Pending", "Ended", "Other"]:
+            widgets.extend(self.build_job_widgets(job_sets[category], label=category))
+        return widgets
+
+    def _auto_expand_to_fill(self, widgets, job_sets):
+        """If there's empty screen space, force-expand collapsed groups to fill it."""
+        if not hasattr(self.main_screen, 'height'):
+            return widgets
+        available_lines = self.main_screen.height - 5
+        if len(widgets) >= available_lines * SCREEN_FILL_RATIO:
+            return widgets
+
+        expandable = [w.group_key for w in widgets if isinstance(w, ExpandableGroupMarker)]
+        if not expandable:
+            return widgets
+
+        for group_key in expandable:
+            if group_key in self.collapsed_groups:
+                self.collapsed_groups[group_key] = False
+        return self._build_all_categories(job_sets)
 
     def draw_entities(self):
         entity_table = self.get_entity_table()
@@ -563,13 +540,21 @@ class TwoColumnJobView(u.WidgetWrap):
 
         u.connect_signal(self.entity_walker, 'modified', self.modified)
 
-    # Abstract methods - must be implemented by subclasses
     def get_entity_table(self):
-        """Return the entity table dict. Must be overridden."""
-        raise NotImplementedError("Subclass must implement get_entity_table()")
+        """Return the entity table dict from `self.jobs.<table_attr>`."""
+        return getattr(self.jobs, self.table_attr, None) if self.table_attr else None
 
     def create_entity_widget(self, entity_name, njobs, running, pending):
-        """Create a widget for an entity in the left panel. Must be overridden."""
-        raise NotImplementedError("Subclass must implement create_entity_widget()")
+        """Create a left-panel widget for an entity row."""
+        return UserItem(entity_name, njobs, running, pending)
+
+
+def make_view(class_name, **config):
+    """Build a `TwoColumnJobView` subclass from a config dict.
+
+    Use for the standard built-in views; subclass directly only when behavior
+    diverges beyond the configurable attributes.
+    """
+    return type(class_name, (TwoColumnJobView,), config)
 
 

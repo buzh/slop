@@ -51,6 +51,14 @@ class Jobs:
                     if job not in parent.array_children:
                         parent.array_children.append(job)
 
+    def reset_array_collapse(self):
+        """Collapse all array parent widgets and invalidate their cached widgets."""
+        for job in self.jobs:
+            if job.is_array_parent and not job.array_collapsed_widget:
+                job.array_collapsed_widget = True
+                if hasattr(job, '_widget'):
+                    del job._widget
+
     def make_user_table(self):
         usertable = {}
 
