@@ -2,10 +2,12 @@ import urwid as u
 import asyncio
 import os
 from slop.models import Jobs
-from slop.slurm.fetcher import SlurmJobFetcher
-from slop.slurm.cluster_fetcher import SlurmClusterFetcher
-from slop.slurm.sreport_fetcher import SreportFetcher
-from slop.slurm.adaptive_sacct import AdaptiveSacctFetcher
+from slop.slurm import (
+    SlurmJobFetcher,
+    SlurmClusterFetcher,
+    SreportFetcher,
+    AdaptiveSacctFetcher,
+)
 from slop.ui.widgets import Header, Footer, GenericOverlayText
 from slop.ui.views import (
     ScreenViewUsers,
@@ -13,19 +15,25 @@ from slop.ui.views import (
     ScreenViewPartitions,
     ScreenViewStates,
     ScreenViewCluster,
-    ConfirmExit,
+    ScreenViewMyJobs,
+    ScreenViewQueue,
+    ScreenViewReport,
 )
-from slop.ui.myjobsview import ScreenViewMyJobs
-from slop.ui.search_overlay import SearchOverlay
-from slop.ui.report_view import ReportView
-from slop.ui.queue_view import ScreenViewQueue
+from slop.ui.overlays import ConfirmExit, SearchOverlay
 from slop import __version__
+
+
+def unhandled_input(key: str) -> None:
+    """Handle unhandled input (global fallback)."""
+    if key == 'q':
+        raise u.ExitMainLoop()
+
 
 class SC(u.WidgetWrap):
     """Main screen controller for slop TUI."""
 
-    def __init__(self):
-        palette = {
+    def __init__(self, offline_data_dir=None):
+        self.palette = [
             # UI Chrome
             ("header",           "white, bold", "dark blue"),
             ("footer",           "white, bold", "dark red"),
@@ -49,15 +57,20 @@ class SC(u.WidgetWrap):
             ("warning",          "yellow",      "black"),
             ("error",            "light red",   "black"),
             ("info",             "light cyan",  "black"),
-        }
+
+            # Overlay dimming (applied to lower layers in overlay stack)
+            ("dim1",             "dark gray",   "black"),  # First dimming level
+            ("dim2",             "black",       "black"),  # Second dimming level (almost black)
+        ]
 
         # Event loop and fetchers
         self.asyncloop = u.AsyncioEventLoop()
-        self.loop = u.MainLoop(self, palette, event_loop=self.asyncloop, unhandled_input=unhandled_input)
-        self.jobfetcher = SlurmJobFetcher(loop=self.asyncloop._loop)
-        self.cluster_fetcher = SlurmClusterFetcher(loop=self.asyncloop._loop)
-        self.sreport_fetcher = SreportFetcher()
-        self.adaptive_sacct = AdaptiveSacctFetcher()
+        self.loop = u.MainLoop(self, self.palette, event_loop=self.asyncloop, unhandled_input=unhandled_input)
+        self.offline_data_dir = offline_data_dir
+        self.jobfetcher = SlurmJobFetcher(loop=self.asyncloop._loop, offline_data_dir=offline_data_dir)
+        self.cluster_fetcher = SlurmClusterFetcher(loop=self.asyncloop._loop, offline_data_dir=offline_data_dir)
+        self.sreport_fetcher = SreportFetcher(offline_data_dir=offline_data_dir)
+        self.adaptive_sacct = AdaptiveSacctFetcher(offline_data_dir=offline_data_dir)
         self.jobs = Jobs(self.jobfetcher.fetch_sync())
         self.refreshing = False
 
@@ -68,6 +81,7 @@ class SC(u.WidgetWrap):
 
         # State tracking
         self.overlay_showing = False
+        self.overlay_stack = []  # Stack of previous bodies for nested overlays
         self.current_view = 1  # 0=my_jobs, 1=users, 2=accounts, 3=partitions, 4=states, 5=cluster, 6=report, 7=queue
         self.last_f1_view = None  # Last F1 view shown (0 or 1)
 
@@ -217,7 +231,7 @@ class SC(u.WidgetWrap):
 
         if search_type in ['user', 'account']:
             # Show comprehensive report view (sreport + adaptive sacct)
-            self.screen_report = ReportView(
+            self.screen_report = ScreenViewReport(
                 self,
                 search_type,
                 search_value,
@@ -235,7 +249,7 @@ class SC(u.WidgetWrap):
         elif search_type == 'job':
             # For job search, show job details overlay if single job found
             from slop.models import Job
-            from slop.ui.views import JobInfoOverlay
+            from slop.ui.overlays import JobInfoOverlay
             jobs_data = result_data.get('jobs', [])
             if jobs_data:
                 job = Job(jobs_data[0])
@@ -332,9 +346,8 @@ class SC(u.WidgetWrap):
             self._show_screen(6, self.screen_report, f"{entity_label} Report - {entity_name}", 'history')
         else:
             # Create empty report view for current user
-            from slop.ui.report_view import ReportView
             empty_sreport = []
-            self.screen_report = ReportView(
+            self.screen_report = ScreenViewReport(
                 self,
                 'user',
                 self.current_username,
@@ -397,7 +410,28 @@ class SC(u.WidgetWrap):
 
     def open_overlay(self, widget, height=None):
         """Display an overlay widget on top of current screen."""
-        self.previous_body = self.frame.body
+        # Limit overlay depth to prevent excessive nesting
+        MAX_OVERLAY_DEPTH = 3
+        if len(self.overlay_stack) >= MAX_OVERLAY_DEPTH:
+            # Silently ignore attempts to open more overlays
+            # User can close some overlays first to free up space
+            return
+
+        # Push current body onto stack for nested overlay support
+        bottom = self.frame.body
+        self.overlay_stack.append(bottom)
+
+        # Calculate offset based on stack depth for visual layering effect
+        depth = len(self.overlay_stack) - 1
+        offset = depth * 3  # 3% offset per level
+
+        # Apply dimming to lower layers
+        if depth > 0:
+            dim_level = min(depth, 2)
+            dim_attr = f'dim{dim_level}'
+            # Map all palette attributes to the dim color
+            attr_map = {attr[0]: dim_attr for attr in self.palette}
+            bottom = u.AttrMap(bottom, attr_map=attr_map)
 
         if height is None:
             # Check for both 'height' and 'overlay_height' attributes
@@ -407,20 +441,24 @@ class SC(u.WidgetWrap):
         # Using Frame with just body ensures the widget gets the full height allocation
         framed = u.Frame(widget)
 
-        # Create overlay
-        overlay = u.Overlay(framed, self.frame.body,
-                           align='center', width=('relative', 70),
-                           valign='middle', height=height)
+        # Create overlay with offset for visual depth
+        overlay = u.Overlay(framed, bottom,
+                           align=('relative', 50 + offset),
+                           width=('relative', 70),
+                           valign=('relative', 50 + offset),
+                           height=height)
         self.frame.body = u.AttrMap(overlay, 'bg')
         self.overlay_showing = True
 
     def close_overlay(self):
         """Close the overlay and return to previous screen."""
-        self.frame.body = self.previous_body
-        self.overlay_showing = False
+        if self.overlay_stack:
+            self.frame.body = self.overlay_stack.pop()
+            self.overlay_showing = len(self.overlay_stack) > 0
+        else:
+            # Shouldn't happen, but handle gracefully
+            self.overlay_showing = False
 
     def startloop(self):
         self.loop.set_alarm_in(1, lambda loop, user_data: asyncio.create_task(self.auto_refresh()))
         self.loop.run()
-
-from slop.main import unhandled_input

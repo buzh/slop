@@ -2,19 +2,33 @@ import subprocess
 import json
 import datetime
 import asyncio
+import os
 
 class SlurmClusterFetcher:
     """Asynchronously fetch Slurm cluster resource data using scontrol."""
 
-    def __init__(self, loop=None):
+    def __init__(self, loop=None, offline_data_dir=None):
         self.nodes_data = {"nodes": []}
         self.partitions_data = {"partitions": []}
         self.loop = loop or asyncio.get_event_loop()
         self.timeout = 10
         self.last_fetch_duration = datetime.timedelta(0)
+        self.offline_data_dir = offline_data_dir
 
     async def fetch_nodes(self):
         """Fetch node information from scontrol."""
+        # If offline mode, load from file
+        if self.offline_data_dir:
+            try:
+                start = datetime.datetime.now()
+                nodes_file = os.path.join(self.offline_data_dir, 'nodes.json')
+                with open(nodes_file, 'r') as f:
+                    self.nodes_data = json.load(f)
+                self.last_fetch_duration = datetime.datetime.now() - start
+            except Exception as e:
+                print(f"Error loading offline nodes data from {nodes_file}: {e}")
+            return
+
         try:
             start = datetime.datetime.now()
             result = await self.loop.run_in_executor(
@@ -31,6 +45,16 @@ class SlurmClusterFetcher:
 
     async def fetch_partitions(self):
         """Fetch partition information from scontrol."""
+        # If offline mode, load from file
+        if self.offline_data_dir:
+            try:
+                partitions_file = os.path.join(self.offline_data_dir, 'partitions.json')
+                with open(partitions_file, 'r') as f:
+                    self.partitions_data = json.load(f)
+            except Exception as e:
+                print(f"Error loading offline partitions data from {partitions_file}: {e}")
+            return
+
         try:
             result = await self.loop.run_in_executor(
                 None,

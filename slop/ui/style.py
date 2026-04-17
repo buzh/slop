@@ -1,4 +1,4 @@
-from slop.slurm.state import is_running, is_ended, is_pending
+from slop.slurm import is_running, is_ended, is_pending
 
 
 def get_display_attr(job, width=None, view_type=None):

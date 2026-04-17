@@ -1,4 +1,4 @@
-""" fetching functions for slop """
+"""Slurm data fetchers and state management."""
 from .state import (
     reasons,
     is_running,
@@ -11,10 +11,16 @@ from .state import (
     job_states,
     job_state_short,
 )
-from .fetcher import SlurmJobFetcher
+from .job_fetcher import SlurmJobFetcher
+from .cluster_fetcher import SlurmClusterFetcher
+from .sreport_fetcher import SreportFetcher
+from .adaptive_sacct_fetcher import AdaptiveSacctFetcher
 
 __all__ = [
     "SlurmJobFetcher",
+    "SlurmClusterFetcher",
+    "SreportFetcher",
+    "AdaptiveSacctFetcher",
     "reasons",
     "is_running",
     "is_pending",

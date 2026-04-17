@@ -4,8 +4,8 @@ import datetime
 import os
 from slop.models import Jobs
 from slop.utils import format_duration, smart_truncate
-from slop.ui.views import JobInfoOverlay
-from slop.ui.history_fetcher import HistoryFetcher
+from slop.ui.overlays import JobInfoOverlay
+from slop.slurm.history_fetcher import HistoryFetcher
 
 
 class MyJobDetailWidget(u.WidgetWrap):
@@ -311,13 +311,11 @@ class ScreenViewMyJobs(u.WidgetWrap):
     def calculate_jobs_per_section(self):
         """Calculate how many jobs to show per section based on available height."""
         if hasattr(self.main_screen, 'height'):
-            # Available height, accounting for potential number of sections
-            # Each section needs: header (1) + divider (1) = 2 overhead lines
-            # With 5 potential sections, that's 10 overhead lines
-            # Reserve some space for navigation
-            available = max(self.main_screen.height - 10, 5)
-            # Distribute evenly across sections, minimum 3
-            self.jobs_per_section = max(available // 5, 3)
+            # Reserve space for section headers (up to 5 sections × 2 lines each)
+            # Use remaining space for jobs, distributed across sections
+            available = max(self.main_screen.height - 12, 5)
+            # Distribute across typical 2-3 active sections (not all 5)
+            self.jobs_per_section = max(available // 3, 5)
         else:
             self.jobs_per_section = 5  # Default fallback
 

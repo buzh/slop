@@ -2,7 +2,7 @@ import urwid as u
 import datetime
 import time
 from slop.utils import format_duration, nice_tres, compress_int_range
-from slop.slurm import is_running, job_state_running, job_state_ended, job_state_pending, job_state_short
+from slop.slurm import is_running, is_pending, is_ended, job_state_running, job_state_ended, job_state_pending, job_state_short
 from slop import __version__
 from slop.ui.style import get_display_attr
 
@@ -156,8 +156,17 @@ class UserJobListWidget(u.WidgetWrap):
     def __init__(self, job, width=None, view_type=None):
         self.job = job
         # Defensive field access - sacct jobs may not have all fields
-        self.start_time = getattr(job, 'start_time', {}).get("number", False) if hasattr(job, 'start_time') else False
-        self.end_time = getattr(job, 'end_time', {}).get("number", 0) if hasattr(job, 'end_time') else 0
+        # For array parents with running children, use earliest child times
+        if job.has_running_children and job.earliest_child_start_time:
+            self.start_time = job.earliest_child_start_time
+        else:
+            self.start_time = getattr(job, 'start_time', {}).get("number", False) if hasattr(job, 'start_time') else False
+
+        if job.has_running_children and job.earliest_child_end_time:
+            self.end_time = job.earliest_child_end_time
+        else:
+            self.end_time = getattr(job, 'end_time', {}).get("number", 0) if hasattr(job, 'end_time') else 0
+
         self.time_limit = getattr(job, 'time_limit', {}).get("number", 0) if hasattr(job, 'time_limit') else 0
         self.jobid = job.job_id
         self.width = width
@@ -232,7 +241,26 @@ class UserJobListWidget(u.WidgetWrap):
             elif col == "job_id":
                 if job.is_array_parent:
                     marker = "▼" if not job.array_collapsed_widget else "▶"
-                    t = f"{marker} {job.job_id}_[*]"
+
+                    # Count child task states for status summary
+                    if job.array_children:
+                        running = sum(1 for c in job.array_children if is_running(c))
+                        pending = sum(1 for c in job.array_children if is_pending(c))
+                        ended = sum(1 for c in job.array_children if is_ended(c))
+
+                        # Build compact status showing only non-zero counts
+                        parts = []
+                        if running > 0:
+                            parts.append(f"R:{running}")
+                        if pending > 0:
+                            parts.append(f"P:{pending}")
+                        if ended > 0:
+                            parts.append(f"E:{ended}")
+                        status = f" ({' '.join(parts)})" if parts else ""
+                    else:
+                        status = ""
+
+                    t = f"{marker} {job.job_id}_[*]{status}"
                 else:
                     t = str(job.job_id)
             elif col == "array_tasks":

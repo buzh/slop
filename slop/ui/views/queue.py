@@ -477,7 +477,7 @@ class ScreenViewQueue(u.WidgetWrap):
                 return None
             elif hasattr(focus_w, 'jobid') and key in ('enter', ' '):
                 # Focused on individual job - show details
-                from slop.ui.views import JobInfoOverlay
+                from slop.ui.overlays import JobInfoOverlay
                 job = self.jobs.job_index.get(focus_w.jobid)
                 if job:
                     self.main_screen.open_overlay(JobInfoOverlay(job, self.main_screen))

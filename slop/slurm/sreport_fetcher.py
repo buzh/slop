@@ -1,6 +1,7 @@
 """Fetch cluster utilization statistics using sreport command."""
 
 import subprocess
+import os
 from datetime import timedelta
 
 __all__ = ["SreportFetcher"]
@@ -9,9 +10,10 @@ __all__ = ["SreportFetcher"]
 class SreportFetcher:
     """Fetch user and account utilization data using sreport command."""
 
-    def __init__(self):
+    def __init__(self, offline_data_dir=None):
         self.timeout = 30
         self.last_fetch_duration = timedelta(0)
+        self.offline_data_dir = offline_data_dir
 
     def fetch_user_utilization(self, username, start_date='1970-01-01', end_date='now'):
         """Fetch account utilization by user.
@@ -75,63 +77,76 @@ class SreportFetcher:
         import time
         start_time = time.time()
 
-        try:
-            result = subprocess.run(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=self.timeout,
-                text=True
-            )
+        # If offline mode, load from file
+        if self.offline_data_dir:
+            try:
+                sreport_file = os.path.join(self.offline_data_dir, 'sreport_user.txt')
+                with open(sreport_file, 'r') as f:
+                    output = f.read()
+                self.last_fetch_duration = timedelta(seconds=time.time() - start_time)
+                lines = output.strip().split('\n')
+            except Exception as e:
+                print(f"Error loading offline sreport data from {sreport_file}: {e}")
+                return None
+        else:
+            try:
+                result = subprocess.run(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=self.timeout,
+                    text=True
+                )
 
-            self.last_fetch_duration = timedelta(seconds=time.time() - start_time)
+                self.last_fetch_duration = timedelta(seconds=time.time() - start_time)
 
-            if result.returncode != 0:
+                if result.returncode != 0:
+                    return None
+
+                # Parse the output
+                lines = result.stdout.strip().split('\n')
+            except subprocess.TimeoutExpired:
+                self.last_fetch_duration = timedelta(seconds=self.timeout)
+                return None
+            except Exception:
                 return None
 
-            # Parse the output
-            lines = result.stdout.strip().split('\n')
-            data = []
+        # Parse lines (common for both online and offline)
+        data = []
 
-            # Find the header line (contains '|')
-            header_idx = -1
-            for idx, line in enumerate(lines):
-                if '|' in line and 'Login' in line:
-                    header_idx = idx
-                    break
+        # Find the header line (contains '|')
+        header_idx = -1
+        for idx, line in enumerate(lines):
+            if '|' in line and 'Login' in line:
+                header_idx = idx
+                break
 
-            if header_idx == -1:
-                return None
-
-            # Parse header
-            header = [field.strip().lower() for field in lines[header_idx].split('|') if field.strip()]
-
-            # Parse data rows
-            for line in lines[header_idx + 1:]:
-                if not line.strip() or '---' in line:
-                    continue
-
-                fields = [field.strip() for field in line.split('|') if field.strip()]
-                if len(fields) != len(header):
-                    continue
-
-                row = {}
-                for key, value in zip(header, fields):
-                    # Convert numeric fields
-                    if key == 'used':
-                        try:
-                            row[key] = int(value)
-                        except ValueError:
-                            row[key] = 0
-                    else:
-                        row[key] = value
-
-                data.append(row)
-
-            return data
-
-        except subprocess.TimeoutExpired:
-            self.last_fetch_duration = timedelta(seconds=self.timeout)
+        if header_idx == -1:
             return None
-        except Exception:
-            return None
+
+        # Parse header
+        header = [field.strip().lower() for field in lines[header_idx].split('|') if field.strip()]
+
+        # Parse data rows
+        for line in lines[header_idx + 1:]:
+            if not line.strip() or '---' in line:
+                continue
+
+            fields = [field.strip() for field in line.split('|') if field.strip()]
+            if len(fields) != len(header):
+                continue
+
+            row = {}
+            for key, value in zip(header, fields):
+                # Convert numeric fields
+                if key == 'used':
+                    try:
+                        row[key] = int(value)
+                    except ValueError:
+                        row[key] = 0
+                else:
+                    row[key] = value
+
+            data.append(row)
+
+        return data

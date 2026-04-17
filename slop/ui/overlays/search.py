@@ -238,7 +238,7 @@ class SearchOverlay(u.WidgetWrap):
                 for job in self.main_screen.jobs.jobs:
                     if str(job.job_id) == query:
                         # Show job details overlay
-                        from slop.ui.views import JobInfoOverlay
+                        from slop.ui.overlays import JobInfoOverlay
                         self.main_screen.close_overlay()
                         self.main_screen.open_overlay(JobInfoOverlay(job, self.main_screen))
                         job_found = True

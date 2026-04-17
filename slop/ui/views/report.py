@@ -2,8 +2,8 @@
 
 import urwid as u
 import datetime
-from slop.ui.views import JobInfoOverlay
-from slop.ui.history_fetcher import HistoryFetcher
+from slop.ui.overlays import JobInfoOverlay
+from slop.slurm.history_fetcher import HistoryFetcher
 
 
 class AccountUsageWidget(u.WidgetWrap):
@@ -35,7 +35,7 @@ class AccountUsageWidget(u.WidgetWrap):
         super().__init__(widget)
 
 
-class ReportView(u.WidgetWrap):
+class ScreenViewReport(u.WidgetWrap):
     """Comprehensive report view showing sreport and sacct data."""
 
     def __init__(self, main_screen, entity_type, entity_name, sreport_data, adaptive_sacct):
@@ -148,7 +148,7 @@ class ReportView(u.WidgetWrap):
                 pass
 
             # Fetch new data and create new view
-            from slop.slurm.sreport_fetcher import SreportFetcher
+            from slop.slurm import SreportFetcher
             sreport = SreportFetcher()
             result = sreport.fetch_user_utilization(username)
             if result:
