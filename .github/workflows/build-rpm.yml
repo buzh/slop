@@ -18,6 +18,8 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: almalinux:9
+    permissions:
+      contents: write
 
     steps:
       - name: Install build tools
@@ -67,26 +69,24 @@ jobs:
       - name: Build RPM
         run: rpmbuild -ba ~/rpmbuild/SPECS/slop.spec
 
-      - name: List built RPMs
+      - name: Stage built RPMs
         run: |
-          echo "Built RPMs:"
-          ls -lh ~/rpmbuild/RPMS/x86_64/
-          ls -lh ~/rpmbuild/SRPMS/
+          mkdir -p "$GITHUB_WORKSPACE/dist-rpm"
+          cp ~/rpmbuild/RPMS/x86_64/slop-*.rpm "$GITHUB_WORKSPACE/dist-rpm/"
+          cp ~/rpmbuild/SRPMS/slop-*.src.rpm  "$GITHUB_WORKSPACE/dist-rpm/"
+          echo "Staged RPMs:"
+          ls -lh "$GITHUB_WORKSPACE/dist-rpm/"
 
       - name: Upload RPMs as artifacts
         uses: actions/upload-artifact@v4
         with:
           name: rpm-packages
-          path: |
-            ~/rpmbuild/RPMS/x86_64/slop-*.rpm
-            ~/rpmbuild/SRPMS/slop-*.src.rpm
+          path: dist-rpm/*.rpm
 
       - name: Upload RPMs to release
         uses: softprops/action-gh-release@v1
         if: github.event_name == 'release'
         with:
-          files: |
-            ~/rpmbuild/RPMS/x86_64/slop-*.rpm
-            ~/rpmbuild/SRPMS/slop-*.src.rpm
+          files: dist-rpm/*.rpm
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
