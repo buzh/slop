@@ -33,7 +33,9 @@ source build_venv/bin/activate
 pip install --upgrade pip
 pip install -r slop/requirements.txt
 pip install pyinstaller
-pyinstaller --onefile --name slop --clean --noconfirm slop/main.py
+pyinstaller --onefile --name slop --clean --noconfirm \
+            --collect-submodules=urwid \
+            slop/main.py
 
 %install
 install -D -m 0755 dist/slop %{buildroot}%{_bindir}/slop
