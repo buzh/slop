@@ -150,7 +150,7 @@ class TwoColumnJobView(u.WidgetWrap):
         job = self.jobs.job_index.get(focus_w.jobid)
         if not job:
             return None
-        if job.is_array_parent:
+        if job.is_array_parent and job.array_children:
             job.toggle_expand()
             self.draw_jobs()
         else:

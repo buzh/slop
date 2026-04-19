@@ -187,33 +187,30 @@ class UserJobListWidget(u.WidgetWrap):
                 else:
                     t = EMPTY_PLACEHOLDER
             elif col == "job_id":
-                if job.is_array_parent:
+                if job.is_array_parent and job.array_children:
                     marker = "▼" if not job.array_collapsed_widget else "▶"
 
-                    # Count child task states for status summary
-                    if job.array_children:
-                        running = sum(1 for c in job.array_children if is_running(c))
-                        pending = sum(1 for c in job.array_children if is_pending(c))
-                        ended = sum(1 for c in job.array_children if is_ended(c))
+                    running = sum(1 for c in job.array_children if is_running(c))
+                    pending = sum(1 for c in job.array_children if is_pending(c))
+                    ended = sum(1 for c in job.array_children if is_ended(c))
 
-                        # Build compact status showing only non-zero counts
-                        parts = []
-                        if running > 0:
-                            parts.append(f"R:{running}")
-                        if pending > 0:
-                            parts.append(f"P:{pending}")
-                        if ended > 0:
-                            parts.append(f"E:{ended}")
-                        status = f" ({' '.join(parts)})" if parts else ""
-                    else:
-                        status = ""
+                    parts = []
+                    if running > 0:
+                        parts.append(f"R:{running}")
+                    if pending > 0:
+                        parts.append(f"P:{pending}")
+                    if ended > 0:
+                        parts.append(f"E:{ended}")
+                    status = f" ({' '.join(parts)})" if parts else ""
 
                     t = f"{marker} {job.job_id}{status}"
                 else:
                     t = str(job.job_id)
             elif col == "array_tasks":
-                if job.is_array_parent:
+                if job.is_array_parent and job.array_children:
                     t = compress_int_range(job.array_task_ids) or EMPTY_PLACEHOLDER
+                elif getattr(job, 'array_task_string', ''):
+                    t = job.array_task_string
                 else:
                     t = EMPTY_PLACEHOLDER
             elif col == "start_time": # epoch -> 1d2h3m
