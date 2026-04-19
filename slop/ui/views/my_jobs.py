@@ -70,6 +70,7 @@ class MyJobDetailWidget(u.WidgetWrap):
 
         # Time progress
         time_text = ''
+        elapsed_str = ''
         if job.start_time and job.start_time.get('set') and job.time_limit and job.time_limit.get('set'):
             start = datetime.datetime.fromtimestamp(job.start_time['number'])
             now = datetime.datetime.now()
