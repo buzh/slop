@@ -19,6 +19,7 @@ from slop.ui.widgets import (
     ChildJobWidget,
     ArrayPendWidget,
     ExpandableGroupMarker,
+    SectionHeader,
     UserItem,
     GenericOverlayText,
 )
@@ -284,11 +285,7 @@ class TwoColumnJobView(u.WidgetWrap):
         return widgets
 
     def _build_section_header(self, label):
-        available_width = getattr(self.main_screen, 'width', 120)
-        right_panel_width = int(available_width * 0.75) - 5
-        header_text = f"═══ {label.upper()} "
-        separator = "═" * max(right_panel_width - len(header_text), 20)
-        return u.AttrMap(u.Text(f"{header_text}{separator}"), 'jobheader')
+        return SectionHeader(label.upper())
 
     def _build_group(self, group_key, group_jobs):
         group_count = len(group_jobs)
@@ -456,8 +453,16 @@ class TwoColumnJobView(u.WidgetWrap):
             # Set widget width for responsive display
             # Right panel is ~75% of screen width, minus borders (2-3 chars)
             available_width = int(self.main_screen.width * 0.75) - 3 if hasattr(self.main_screen, 'width') else None
-            for job in jobtable:
-                job.set_widget_width(available_width, view_type=self.view_type)
+
+            # Build widgets (Running > Pending > Ended > Other). Categorize first so
+            # we can give every row in a category the same column layout — when any
+            # row is an array parent, all rows in that category include array_tasks.
+            job_sets = self.categorize_jobs(jobtable)
+            for cat_jobs in job_sets.values():
+                force_col = any(j.is_array_parent for j in cat_jobs)
+                for job in cat_jobs:
+                    job.set_widget_width(available_width, view_type=self.view_type,
+                                         force_array_tasks_col=force_col)
 
             # Track selected job
             focus_w, _ = self.jobwalker.get_focus()
@@ -469,8 +474,6 @@ class TwoColumnJobView(u.WidgetWrap):
             u.disconnect_signal(self.jobwalker, 'modified', self.modified)
             self.jobwalker.clear()
 
-            # Build widgets (Running > Pending > Ended > Other)
-            job_sets = self.categorize_jobs(jobtable)
             jobwalker_widgets = self._build_all_categories(job_sets)
             jobwalker_widgets = self._auto_expand_to_fill(jobwalker_widgets, job_sets)
 

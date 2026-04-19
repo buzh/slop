@@ -136,13 +136,15 @@ class Job:
         if not hasattr(self, '_widget'):
             self._widget = UserJobListWidget(self,
                                             width=getattr(self, '_widget_width', None),
-                                            view_type=getattr(self, '_widget_view_type', None))
+                                            view_type=getattr(self, '_widget_view_type', None),
+                                            force_array_tasks_col=getattr(self, '_widget_force_array_tasks_col', False))
         return self._widget
 
-    def set_widget_width(self, width, view_type=None):
+    def set_widget_width(self, width, view_type=None, force_array_tasks_col=False):
         """Set width and view type for widget creation and clear cache to force recreation."""
         self._widget_width = width
         self._widget_view_type = view_type
+        self._widget_force_array_tasks_col = force_array_tasks_col
         if hasattr(self, '_widget'):
             delattr(self, '_widget')
 

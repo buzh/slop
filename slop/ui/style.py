@@ -202,10 +202,14 @@ def _insert_after(layout, anchor, entry):
     return out
 
 
-def get_display_attr(job, width=None, view_type=None):
+def get_display_attr(job, width=None, view_type=None, force_array_tasks_col=False):
     """Get column layout for a job.
 
     Returns dict {field: (sizing, weight, wrap_mode)} suitable for urwid.Columns.
+
+    `force_array_tasks_col` adds the array_tasks column even for non-parent rows,
+    so every row in a category sharing at least one array parent uses the same
+    layout (and lines up with the header).
     """
     size = _size(width)
     show_user = bool(view_type and view_type != 'users')
@@ -225,9 +229,9 @@ def get_display_attr(job, width=None, view_type=None):
     if show_user:
         layout = _insert_after(layout, 'job_id', USER_COL)
 
-    # Array parents get an array_tasks column except in running state, where
-    # the layout deliberately matches non-array running jobs for alignment.
-    if job.is_array_parent and category != 'running':
+    # array_tasks is added for the whole category whenever any row in it is an
+    # array parent (skipped in 'running' to keep alignment with non-array running jobs).
+    if (job.is_array_parent or force_array_tasks_col) and category != 'running':
         anchor = 'user_name' if show_user else 'job_id'
         layout = _insert_after(layout, anchor, ARRAY_TASKS_COL)
 

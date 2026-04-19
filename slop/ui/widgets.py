@@ -154,7 +154,7 @@ class UserJobListHeader(u.WidgetWrap): # Dynamic header line item for job walker
 
 
 class UserJobListWidget(u.WidgetWrap):
-    def __init__(self, job, width=None, view_type=None):
+    def __init__(self, job, width=None, view_type=None, force_array_tasks_col=False):
         self.job = job
         # Defensive field access - sacct jobs may not have all fields
         # For array parents with running children, use earliest child times
@@ -172,7 +172,7 @@ class UserJobListWidget(u.WidgetWrap):
         self.jobid = job.job_id
         self.width = width
         self.view_type = view_type
-        self.display_attr = get_display_attr(job, width, view_type)
+        self.display_attr = get_display_attr(job, width, view_type, force_array_tasks_col)
         self.is_array = job.is_array
         self.widget = self.create_widget()
         super().__init__(self.widget)
@@ -261,12 +261,14 @@ class UserJobListWidget(u.WidgetWrap):
                     else:
                         status = ""
 
-                    t = f"{marker} {job.job_id}_[*]{status}"
+                    t = f"{marker} {job.job_id}{status}"
                 else:
                     t = str(job.job_id)
             elif col == "array_tasks":
-                    
-                    t = compress_int_range(job.array_task_ids) 
+                if job.is_array_parent:
+                    t = compress_int_range(job.array_task_ids) or EMPTY_PLACEHOLDER
+                else:
+                    t = EMPTY_PLACEHOLDER
             elif col == "start_time": # epoch -> 1d2h3m
                 if self.start_time:
                     ts = int(time.time()) - self.start_time
@@ -339,6 +341,13 @@ class UserItem(u.WidgetWrap):
 
     def selectable(self):
             return True
+
+
+class SectionHeader(u.WidgetWrap):
+    """'═══ LABEL ═══...' header that auto-fills remaining width via urwid.Divider."""
+    def __init__(self, label):
+        cols = u.Columns([('pack', u.Text(f'═══ {label} ')), u.Divider('═')])
+        super().__init__(u.AttrMap(cols, 'jobheader'))
 
 
 class JobListDivider(u.WidgetWrap):

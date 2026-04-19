@@ -6,6 +6,7 @@ from slop.models import Jobs
 from slop.utils import format_duration, smart_truncate
 from slop.ui.constants import EMPTY_PLACEHOLDER
 from slop.ui.overlays import JobInfoOverlay
+from slop.ui.widgets import SectionHeader
 from slop.slurm.history_fetcher import HistoryFetcher
 
 
@@ -371,10 +372,7 @@ class ScreenViewMyJobs(u.WidgetWrap):
 
                     # Modern section header with expand/collapse indicator
                     expand_indicator = '▼' if not collapsed else '▶'
-                    header_text = f"═══ {expand_indicator} {state_icons[state]} ({total_count}) "
-                    remaining_width = max(available_width - len(header_text), 20)
-                    separator = "═" * remaining_width
-                    widgets.append(u.AttrMap(u.Text(f"{header_text}{separator}"), 'jobheader'))
+                    widgets.append(SectionHeader(f"{expand_indicator} {state_icons[state]} ({total_count})"))
 
                     # Sort jobs
                     sorted_jobs = sorted(state_jobs, key=lambda j: j.job_id, reverse=True)

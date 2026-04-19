@@ -2,6 +2,7 @@
 import urwid as u
 from slop.models import ClusterResources
 from slop.utils import smart_truncate
+from slop.ui.widgets import SectionHeader
 
 
 class ScreenViewCluster(u.WidgetWrap):
@@ -85,12 +86,8 @@ class ScreenViewCluster(u.WidgetWrap):
         # Build widgets
         widgets = []
 
-        # Calculate separator width
-        separator_width = available_width
-
         # === Overall cluster status ===
-        summary_sep = "═" * max(separator_width - 20, 20)
-        widgets.append(u.AttrMap(u.Text(f"═══ CLUSTER OVERVIEW {summary_sep}"), 'jobheader'))
+        widgets.append(SectionHeader('CLUSTER OVERVIEW'))
 
         # Aligned resource display with consistent column widths
         # Label column: 8 chars, bar in brackets, then stats
@@ -110,8 +107,7 @@ class ScreenViewCluster(u.WidgetWrap):
         # === GPU resources ===
         if gpu_stats:
             widgets.append(u.Divider())
-            gpu_sep = "═" * max(separator_width - 18, 20)
-            widgets.append(u.AttrMap(u.Text(f"═══ GPU RESOURCES {gpu_sep}"), 'jobheader'))
+            widgets.append(SectionHeader('GPU RESOURCES'))
 
             # Sort GPU types for consistent display
             for gpu_type in sorted(gpu_stats.keys()):
@@ -127,8 +123,7 @@ class ScreenViewCluster(u.WidgetWrap):
         gpu_nodes = [n for n in cluster.nodes if n.gpus and n.is_up]
         if gpu_nodes:
             widgets.append(u.Divider())
-            gpu_nodes_sep = "═" * max(separator_width - 15, 20)
-            widgets.append(u.AttrMap(u.Text(f"═══ GPU NODES {gpu_nodes_sep}"), 'jobheader'))
+            widgets.append(SectionHeader('GPU NODES'))
 
             # Column headers for GPU nodes
             node_col = "Node".ljust(node_name_width)
@@ -172,8 +167,7 @@ class ScreenViewCluster(u.WidgetWrap):
 
         # === All nodes summary ===
         widgets.append(u.Divider())
-        all_nodes_sep = "═" * max(separator_width - 19, 20)
-        widgets.append(u.AttrMap(u.Text(f"═══ ALL NODES BY STATE {all_nodes_sep}"), 'jobheader'))
+        widgets.append(SectionHeader('ALL NODES BY STATE'))
 
         # Group nodes by state with better formatting
         nodes_by_state = cluster.get_nodes_by_state()
@@ -212,7 +206,7 @@ class ScreenViewCluster(u.WidgetWrap):
             node_names = sorted([n.name for n in node_list])
 
             # Build wrapped lines
-            max_line_width = separator_width - 25  # Account for state label
+            max_line_width = available_width - 25  # Account for state label
             current_line = []
             current_width = 0
             lines = []
