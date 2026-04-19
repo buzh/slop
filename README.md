@@ -5,6 +5,10 @@ https://github.com/user-attachments/assets/e1522f06-295f-4b20-b5cd-76cb24a0c9f1
 # slop
 A `top`-like utility for the Slurm HPC batch job scheduler
 
+# April 19th, 2026: v1.1.5a hotfix release
+
+Fixes possible crash (thanks, @csniper-patrick)
+
 # April 17th, 2026: v1.1.5 is released
 
 Good news, everyone! Slop 1.1.5 is here with loads of optimizations and bug fixes, and
@@ -46,6 +50,6 @@ Clone the repo, create venv and install deps as above, then:
 
 ```
 pip install pyinstaller
-pyinstaller --onefile slop/main.py -n slop
+pyinstaller --collect-all=urwid --onefile slop/main.py -n slop
 cp dist/slop /somewhere/in/path  # "slop" is the resulting binary
 ```
