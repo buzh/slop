@@ -5,6 +5,7 @@ from slop.utils import format_duration, nice_tres, compress_int_range
 from slop.slurm import is_running, is_pending, is_ended, job_state_running, job_state_ended, job_state_pending, job_state_short
 from slop import __version__
 from slop.ui.style import get_display_attr
+from slop.ui.constants import EMPTY_PLACEHOLDER
 
 class IndentHeader(u.WidgetWrap):
     def __init__(self, header):
@@ -24,7 +25,7 @@ class ChildJobWidget(u.WidgetWrap):
         self.jobid = job.job_id
 
         # Build compact, informative display for array child
-        task_id = job._task_id if hasattr(job, '_task_id') and job._task_id is not None else '?'
+        task_id = job._task_id if hasattr(job, '_task_id') and job._task_id is not None else EMPTY_PLACEHOLDER
 
         # Determine state symbol and color
         if "COMPLETED" in job.states:
@@ -50,33 +51,33 @@ class ChildJobWidget(u.WidgetWrap):
                 elapsed = int(time.time()) - start_time['number']
                 runtime = format_duration((elapsed // 60) * 60)
             else:
-                runtime = "N/A"
+                runtime = EMPTY_PLACEHOLDER
 
-            node = getattr(job, 'nodes', 'N/A')
+            node = getattr(job, 'nodes', None)
             tres = nice_tres(job) if hasattr(job, 'tres_alloc_str') else ''
 
             text = f"  Task [{task_id}]: {symbol} {runtime}"
-            if node != 'N/A' and node:
+            if node:
                 text += f" on {node}"
             if tres:
                 text += f" ({tres})"
 
         elif "PENDING" in job.states:
             # Pending: Task [8]: ⋯ Priority (10h requested)
-            reason = getattr(job, 'state_reason', 'Unknown')
+            reason = getattr(job, 'state_reason', EMPTY_PLACEHOLDER)
             time_limit = getattr(job, 'time_limit', {})
             if isinstance(time_limit, dict) and time_limit.get('number'):
                 requested = format_duration(time_limit['number'] * 60)
             else:
-                requested = "N/A"
+                requested = EMPTY_PLACEHOLDER
 
             text = f"  Task [{task_id}]: {symbol} {reason} ({requested} requested)"
 
         else:
             # Ended: Task [5]: ✓ 3h42m (exit: 0) or ✗ 0h5m (exit: 1, OutOfMemory)
             wall_time_val = getattr(job, 'end_time', {}).get('number', 0) - getattr(job, 'start_time', {}).get('number', 0)
-            wall_time = format_duration(wall_time_val) if wall_time_val > 0 else "N/A"
-            exit_code = getattr(job, 'returncode', 'N/A')
+            wall_time = format_duration(wall_time_val) if wall_time_val > 0 else EMPTY_PLACEHOLDER
+            exit_code = getattr(job, 'returncode', EMPTY_PLACEHOLDER)
 
             text = f"  Task [{task_id}]: {symbol} {wall_time} (exit: {exit_code}"
 
@@ -237,7 +238,7 @@ class UserJobListWidget(u.WidgetWrap):
                 if job.is_array_child and job._task_id is not None:
                     t = f"[{job._task_id}]"
                 else:
-                    t = "N/A"
+                    t = EMPTY_PLACEHOLDER
             elif col == "job_id":
                 if job.is_array_parent:
                     marker = "▼" if not job.array_collapsed_widget else "▶"
@@ -272,14 +273,14 @@ class UserJobListWidget(u.WidgetWrap):
                     st = (ts // 60) * 60
                     t = format_duration(st)
                 else:
-                    t = "N/A"
+                    t = EMPTY_PLACEHOLDER
             elif col == "end_time": # epoch -> 1d2h3m
                 if self.end_time:
                     ts = self.end_time - int(time.time())
                     timestamp = (ts // 60) * 60
                     t = format_duration(timestamp)
                 else:
-                    t = "N/A"
+                    t = EMPTY_PLACEHOLDER
             elif col == "submit_time": # epoch -> HH:MM (if today) or day/month HH:MM
                 if value and isinstance(value, dict) and "number" in value:
                     timestamp = datetime.datetime.fromtimestamp(int(value["number"]))
@@ -288,7 +289,7 @@ class UserJobListWidget(u.WidgetWrap):
                     else:
                         t = timestamp.strftime('%d/%m %H:%M')
                 else:
-                    t = "N/A"
+                    t = EMPTY_PLACEHOLDER
             elif col == "wall_time": # if pending, show time requested. otherwise, show duration so far
                 if 'PENDING' in job.states:
                     t = format_duration(self.time_limit * 60)
@@ -482,7 +483,7 @@ class AccountUsageWidget(u.WidgetWrap):
 
     def __init__(self, account_data):
         self.account_data = account_data
-        account = account_data.get('account', 'N/A')
+        account = account_data.get('account', EMPTY_PLACEHOLDER)
         used_hours = account_data.get('used', 0)
 
         hours_str = f"{used_hours:,}" if used_hours >= 1000 else str(used_hours)

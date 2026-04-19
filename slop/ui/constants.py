@@ -11,3 +11,8 @@ MAX_PENDING_CHILDREN_INLINE = 10
 # Target fraction of vertical screen space the job list should fill before we
 # stop opportunistically expanding collapsed groups.
 SCREEN_FILL_RATIO = 0.9
+
+# Single placeholder rendered wherever a field has no value. Use this in any
+# display path so missing data looks the same everywhere; never branch on it
+# (use None as the data-missing sentinel and substitute this only at render).
+EMPTY_PLACEHOLDER = '-'

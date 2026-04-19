@@ -5,6 +5,8 @@ turns that dict into urwid widgets. No view state involved.
 """
 import urwid as u
 
+from slop.ui.constants import EMPTY_PLACEHOLDER
+
 
 def calculate_user_stats(jobs):
     """Aggregate sacct job records into summary stats.
@@ -39,7 +41,7 @@ def calculate_user_stats(jobs):
             stats['completed'] += 1
         elif 'FAILED' in states:
             stats['failed'] += 1
-            reason = getattr(job, 'state_reason', 'Unknown')
+            reason = getattr(job, 'state_reason', EMPTY_PLACEHOLDER)
             stats['failed_reasons'][reason] = stats['failed_reasons'].get(reason, 0) + 1
         elif 'CANCELLED' in states:
             stats['cancelled'] += 1

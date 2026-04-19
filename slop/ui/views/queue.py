@@ -3,6 +3,7 @@
 import urwid as u
 import datetime
 from slop.utils import format_duration
+from slop.ui.constants import EMPTY_PLACEHOLDER
 
 
 class QueueJobWidget(u.WidgetWrap):
@@ -44,7 +45,7 @@ class QueueJobWidget(u.WidgetWrap):
             duration_min = time_limit.get('number', 0)
             duration_str = format_duration(duration_min * 60)
         else:
-            duration_str = "?"
+            duration_str = EMPTY_PLACEHOLDER
 
         # Estimated start time
         start_time = getattr(job, 'start_time', {})
@@ -58,19 +59,19 @@ class QueueJobWidget(u.WidgetWrap):
             wait_sec = int((now - submit).total_seconds())
             wait_str = format_duration(wait_sec)
         else:
-            wait_str = "?"
+            wait_str = EMPTY_PLACEHOLDER
 
         # Reason
-        reason = getattr(job, 'state_reason', 'Unknown')
+        reason = getattr(job, 'state_reason', EMPTY_PLACEHOLDER)
 
         # Resource summary
         resource_str = self._get_resource_summary()
 
         # QOS
-        qos = getattr(job, 'qos', '?')
+        qos = getattr(job, 'qos', EMPTY_PLACEHOLDER)
 
         # Username
-        username = getattr(job, 'user_name', '?')
+        username = getattr(job, 'user_name', EMPTY_PLACEHOLDER)
 
         # Format based on width
         if self.width < 100:
@@ -128,11 +129,11 @@ class QueueJobWidget(u.WidgetWrap):
     def _get_eta_string(self, start_time):
         """Get estimated time to start as a human-readable string."""
         if not isinstance(start_time, dict) or not start_time.get('set'):
-            return "unknown"
+            return EMPTY_PLACEHOLDER
 
         start_timestamp = start_time.get('number', 0)
         if start_timestamp == 0:
-            return "unknown"
+            return EMPTY_PLACEHOLDER
 
         start_dt = datetime.datetime.fromtimestamp(start_timestamp)
         now = datetime.datetime.now()
@@ -174,7 +175,7 @@ class QueueJobWidget(u.WidgetWrap):
             mem_mb = mem_per_cpu.get('number', 0) * cpus
             mem_str = f"{mem_mb // 1024}GB" if mem_mb > 1024 else f"{mem_mb}MB"
         else:
-            mem_str = "?"
+            mem_str = None
 
         # Check for GPUs in tres_req_str
         tres_str = getattr(job, 'tres_req_str', '')
@@ -191,12 +192,12 @@ class QueueJobWidget(u.WidgetWrap):
             parts.append(f"{nodes}n")
         if cpus > 0:
             parts.append(f"{cpus}c")
-        if mem_str != "?":
+        if mem_str:
             parts.append(mem_str)
         if gpu_count > 0:
             parts.append(f"{gpu_count}gpu")
 
-        return " ".join(parts) if parts else "?"
+        return " ".join(parts) if parts else EMPTY_PLACEHOLDER
 
     def _get_color_attr(self, reason):
         """Get color attribute based on job reason."""
@@ -240,8 +241,8 @@ class QueueGroupWidget(u.WidgetWrap):
         count = len(self.job_group)
 
         # Get shared attributes
-        username = getattr(job, 'user_name', '?')
-        reason = getattr(job, 'state_reason', 'Unknown')
+        username = getattr(job, 'user_name', EMPTY_PLACEHOLDER)
+        reason = getattr(job, 'state_reason', EMPTY_PLACEHOLDER)
 
         # Priority range
         priorities = []
@@ -279,7 +280,7 @@ class QueueGroupWidget(u.WidgetWrap):
             else:
                 duration_str = f"{format_duration(min_dur * 60)}-{format_duration(max_dur * 60)}"
         else:
-            duration_str = "?"
+            duration_str = EMPTY_PLACEHOLDER
 
         # Rank - show start rank in the column, add range info to name
         rank_num = self.start_rank
@@ -291,15 +292,16 @@ class QueueGroupWidget(u.WidgetWrap):
             name_col = f"[{count} jobs #{self.start_rank}-{self.end_rank}]"
 
         # Format based on width - match individual job column widths exactly
+        ph = EMPTY_PLACEHOLDER
         if self.width < 100:
             # Rank(3) Priority(7) Sz(3) Time(7) User(8) Name(15)
             line = f"{rank_num:>3} {priority_num:>7} {size_indicator:<3} {duration_str:>7} {username[:8]:<8} {name_col[:15]:<15}"
         elif self.width < 140:
             # Rank(3) Priority(7) Sz(3) Time(7) ETA(14) User(10) Reason(12) Name(20)
-            line = f"{rank_num:>3} {priority_num:>7} {size_indicator:<3} {duration_str:>7} {'-':<14} {username[:10]:<10} {reason[:12]:<12} {name_col[:20]:<20}"
+            line = f"{rank_num:>3} {priority_num:>7} {size_indicator:<3} {duration_str:>7} {ph:<14} {username[:10]:<10} {reason[:12]:<12} {name_col[:20]:<20}"
         else:
             # Rank(3) Priority(7) Sz(3) Time(7) ETA(14) Wait(11) User(10) QOS(8) Reason(15) Resources(18) Name(25)
-            line = f"{rank_num:>3} {priority_num:>7} {size_indicator:<3} {duration_str:>7} {'-':<14} {'-':>11} {username[:10]:<10} {'-':<8} {reason[:15]:<15} {'-':<18} {name_col[:25]:<25}"
+            line = f"{rank_num:>3} {priority_num:>7} {size_indicator:<3} {duration_str:>7} {ph:<14} {ph:>11} {username[:10]:<10} {ph:<8} {reason[:15]:<15} {ph:<18} {name_col[:25]:<25}"
 
         return u.AttrMap(u.Text(line), 'normal', 'normal_selected')
 
@@ -398,8 +400,8 @@ class ScreenViewQueue(u.WidgetWrap):
             current_reason = None
 
             for job in sorted_jobs:
-                user = getattr(job, 'user_name', '?')
-                reason = getattr(job, 'state_reason', 'Unknown')
+                user = getattr(job, 'user_name', EMPTY_PLACEHOLDER)
+                reason = getattr(job, 'state_reason', EMPTY_PLACEHOLDER)
 
                 if user == current_user and reason == current_reason:
                     # Same group - add to current

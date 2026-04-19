@@ -4,6 +4,7 @@ import datetime
 import os
 from slop.models import Jobs
 from slop.utils import format_duration, smart_truncate
+from slop.ui.constants import EMPTY_PLACEHOLDER
 from slop.ui.overlays import JobInfoOverlay
 from slop.slurm.history_fetcher import HistoryFetcher
 
@@ -69,8 +70,8 @@ class MyJobDetailWidget(u.WidgetWrap):
         job_id = str(job.job_id)
 
         # Time progress
-        time_text = ''
-        elapsed_str = ''
+        time_text = EMPTY_PLACEHOLDER
+        elapsed_str = EMPTY_PLACEHOLDER
         if job.start_time and job.start_time.get('set') and job.time_limit and job.time_limit.get('set'):
             start = datetime.datetime.fromtimestamp(job.start_time['number'])
             now = datetime.datetime.now()
@@ -90,13 +91,13 @@ class MyJobDetailWidget(u.WidgetWrap):
         resources = self._get_compact_resources(job)
 
         # Node
-        node = job.nodes if job.nodes else '?'
+        node = job.nodes if job.nodes else EMPTY_PLACEHOLDER
 
         # Format based on available width
         if self.width < 90:
             # Narrow: just essentials
             name = self._truncate(job.name, 15)
-            line = f"{icon} {job_id:>7} {name:<17} {elapsed_str if elapsed_str else 'N/A':>7}"
+            line = f"{icon} {job_id:>7} {name:<17} {elapsed_str:>7}"
         elif self.width < 120:
             # Medium: add time progress
             name = self._truncate(job.name, 18)
@@ -116,7 +117,7 @@ class MyJobDetailWidget(u.WidgetWrap):
         job_id = str(job.job_id)
 
         # Wait time
-        wait_text = ''
+        wait_text = EMPTY_PLACEHOLDER
         if job.submit_time and job.submit_time.get('set'):
             submit = datetime.datetime.fromtimestamp(job.submit_time['number'])
             now = datetime.datetime.now()
@@ -125,7 +126,7 @@ class MyJobDetailWidget(u.WidgetWrap):
             wait_text = f"{wait_str} wait"
 
         # Reason
-        reason = getattr(job, 'state_reason', '?')
+        reason = getattr(job, 'state_reason', EMPTY_PLACEHOLDER)
         reason_short = self._abbreviate_reason(reason)
 
         # Resources
@@ -155,7 +156,7 @@ class MyJobDetailWidget(u.WidgetWrap):
         job_id = str(job.job_id)
 
         # Runtime
-        runtime_text = ''
+        runtime_text = EMPTY_PLACEHOLDER
         if job.start_time and job.start_time.get('set') and job.end_time and job.end_time.get('set'):
             start = datetime.datetime.fromtimestamp(job.start_time['number'])
             end = datetime.datetime.fromtimestamp(job.end_time['number'])
@@ -163,7 +164,7 @@ class MyJobDetailWidget(u.WidgetWrap):
             runtime_text = format_duration(runtime)
 
         # Exit code
-        exit_text = ''
+        exit_text = EMPTY_PLACEHOLDER
         if hasattr(job, 'returncode'):
             exit_text = f"exit:{job.returncode}"
 
@@ -218,7 +219,7 @@ class MyJobDetailWidget(u.WidgetWrap):
             if 'gres/gpu' in tres_dict:
                 parts.append(f"{tres_dict['gres/gpu']}gpu")
 
-        return ' '.join(parts) if parts else ''
+        return ' '.join(parts) if parts else EMPTY_PLACEHOLDER
 
     def _abbreviate_reason(self, reason):
         """Abbreviate common reasons."""

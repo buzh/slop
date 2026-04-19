@@ -3,6 +3,7 @@ import urwid as u
 import datetime
 from slop.slurm import is_running, is_ended, is_pending, reasons
 from slop.utils import format_duration, nice_tres
+from slop.ui.constants import EMPTY_PLACEHOLDER
 
 
 class JobInfoOverlay(u.WidgetWrap):
@@ -72,7 +73,7 @@ class JobInfoOverlay(u.WidgetWrap):
                 widgets.append(u.Text(f"Array Job   : {array_id} (Parent, {max_tasks} tasks)"))
 
         # QoS and Priority
-        qos = getattr(job, 'qos', 'N/A')
+        qos = getattr(job, 'qos', EMPTY_PLACEHOLDER)
         widgets.append(u.Text(f"QoS         : {qos}"))
 
         if hasattr(job, 'priority') and job.priority.get('set'):
@@ -159,7 +160,7 @@ class JobInfoOverlay(u.WidgetWrap):
             widgets.append(u.Text(f"Total Time  : {runtime}"))
 
         # Time limit
-        time_limit = "N/A"
+        time_limit = EMPTY_PLACEHOLDER
         if hasattr(job, 'time_limit') and job.time_limit.get("set"):
             time_limit = format_duration(job.time_limit["number"] * 60)
         widgets.append(u.Text(f"Time Limit  : {time_limit}"))
@@ -210,16 +211,16 @@ class JobInfoOverlay(u.WidgetWrap):
         widgets.append(u.Divider("─"))
 
         # Command
-        command = getattr(job, 'command', 'N/A')
-        if command and command != 'N/A':
+        command = getattr(job, 'command', None)
+        if command:
             # Truncate long commands
             if len(command) > self.content_width - 14:
                 command = command[:self.content_width - 17] + "..."
             widgets.append(u.Text(f"Command     : {command}"))
 
         # Working directory
-        work_dir = getattr(job, 'current_working_directory', 'N/A')
-        if work_dir and work_dir != 'N/A':
+        work_dir = getattr(job, 'current_working_directory', None)
+        if work_dir:
             if len(work_dir) > self.content_width - 14:
                 work_dir = work_dir[:self.content_width - 17] + "..."
             widgets.append(u.Text(f"Work Dir    : {work_dir}"))
@@ -256,7 +257,7 @@ class JobInfoOverlay(u.WidgetWrap):
                 return datetime.datetime.fromtimestamp(int(ts["number"])).strftime("%Y-%m-%d %H:%M:%S")
             return "Not set"
         except Exception:
-            return "N/A"
+            return EMPTY_PLACEHOLDER
 
     def format_exit_code(self, job):
         """Format exit code with status."""
@@ -271,33 +272,33 @@ class JobInfoOverlay(u.WidgetWrap):
                     if status:
                         return f"{code} ({', '.join(status)})"
                     return f"{code}"
-            return "N/A"
+            return EMPTY_PLACEHOLDER
         except Exception:
-            return "N/A"
+            return EMPTY_PLACEHOLDER
 
     def calculate_queue_time(self, job):
         """Calculate how long job has been waiting in queue."""
         try:
             submit_ts = job.submit_time.get('number')
             if not submit_ts:
-                return "N/A"
+                return EMPTY_PLACEHOLDER
             now = datetime.datetime.now().timestamp()
             elapsed = int(now - submit_ts)
             return format_duration(elapsed)
         except Exception:
-            return "N/A"
+            return EMPTY_PLACEHOLDER
 
     def calculate_runtime(self, job):
         """Calculate how long job has been running."""
         try:
             start_ts = job.start_time.get('number')
             if not start_ts:
-                return "N/A"
+                return EMPTY_PLACEHOLDER
             now = datetime.datetime.now().timestamp()
             elapsed = int(now - start_ts)
             return format_duration(elapsed)
         except Exception:
-            return "N/A"
+            return EMPTY_PLACEHOLDER
 
     def calculate_time_remaining(self, job):
         """Calculate time remaining until time limit."""
@@ -322,15 +323,15 @@ class JobInfoOverlay(u.WidgetWrap):
             start_ts = job.start_time.get('number')
             end_ts = job.end_time.get('number')
             if not start_ts or not end_ts:
-                return "N/A"
+                return EMPTY_PLACEHOLDER
             elapsed = int(end_ts - start_ts)
             return format_duration(elapsed)
         except Exception:
-            return "N/A"
+            return EMPTY_PLACEHOLDER
 
     def parse_tres(self, job):
         """Parse TRES string into readable components."""
-        info = {'cpus': 'N/A', 'memory': 'N/A', 'gpus': None}
+        info = {'cpus': EMPTY_PLACEHOLDER, 'memory': EMPTY_PLACEHOLDER, 'gpus': None}
 
         # CPUs
         if hasattr(job, 'cpus') and job.cpus.get('set'):
