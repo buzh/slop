@@ -1,2 +1,2 @@
 """slop - A top-like TUI monitor for Slurm HPC clusters."""
-__version__ = "1.1.5"
+__version__ = "1.1.5a"
