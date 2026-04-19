@@ -22,9 +22,11 @@ class Jobs:
 
     def update_slurmdata(self, slurm_json):
         previous_array_states = {}
+        old_jobs_by_id = {}
         for job in self.jobs:
             if job.is_array_parent:
                 previous_array_states[job.job_id] = job.array_collapsed_widget
+            old_jobs_by_id[job.job_id] = job
 
         self.jobs.clear()
         self.jobs = [Job(job) for job in slurm_json['jobs']]
@@ -36,6 +38,15 @@ class Jobs:
                 job.array_collapsed_widget = previous_array_states[job.job_id]
 
         self.link_array_jobs()
+
+        # Carry over cached widgets from the previous Job instances when the
+        # rendered content is unchanged. Must happen after link_array_jobs so
+        # array parents see their children when computing the signature.
+        for job in self.jobs:
+            old_job = old_jobs_by_id.get(job.job_id)
+            if old_job is not None:
+                job.transfer_widget_cache_from(old_job)
+
         self.make_user_table()
         self.make_account_table()
         self.make_partition_table()
