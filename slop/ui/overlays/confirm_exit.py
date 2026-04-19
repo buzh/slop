@@ -1,24 +1,17 @@
 """Confirm exit overlay."""
 import urwid as u
 
+from slop.ui.widgets import rounded_box
+
 
 class ConfirmExit(u.WidgetWrap):
     def __init__(self, main_screen):
         self.main_screen = main_screen
         y = u.AttrMap(u.Button("Yes", self.exit_program), 'buttons', 'buttons_selected')
         n = u.AttrMap(u.Button("No", self.cancel_exit), 'buttons', 'buttons_selected')
-        b = [y, n]
-        buttons = u.Columns(b)
+        buttons = u.Columns([y, n])
 
-        widget = u.AttrMap(
-            u.LineBox(
-                u.Filler(u.Pile([buttons])),
-                title='Confirm exit?',
-                tlcorner='╭', trcorner='╮',
-                blcorner='╰', brcorner='╯'
-            ),
-            'bg'
-        )
+        widget = u.AttrMap(rounded_box(u.Filler(u.Pile([buttons])), title='Confirm exit?'), 'bg')
         u.WidgetWrap.__init__(self, widget)
 
     def keypress(self, size, key):

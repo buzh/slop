@@ -6,7 +6,7 @@ from slop.models import Jobs
 from slop.utils import format_duration, smart_truncate
 from slop.ui.constants import EMPTY_PLACEHOLDER
 from slop.ui.overlays import JobInfoOverlay
-from slop.ui.widgets import SectionHeader
+from slop.ui.widgets import SectionHeader, rounded_box
 from slop.slurm.history_fetcher import HistoryFetcher
 
 
@@ -269,23 +269,13 @@ class ScreenViewMyJobs(u.WidgetWrap):
         self.current_jobs_walker = u.SimpleFocusListWalker([])
         self.current_jobs_listbox = u.ListBox(self.current_jobs_walker)
 
-        left_panel = u.LineBox(
-            u.ScrollBar(self.current_jobs_listbox),
-            title="Current Jobs",
-            tlcorner='╭', trcorner='╮',
-            blcorner='╰', brcorner='╯'
-        )
+        left_panel = rounded_box(u.ScrollBar(self.current_jobs_listbox), title='Current Jobs')
 
         # === RIGHT PANEL: Job History ===
         self.history_walker = u.SimpleFocusListWalker([])
         self.history_listbox = u.ListBox(self.history_walker)
 
-        right_panel = u.LineBox(
-            u.ScrollBar(self.history_listbox),
-            title="Job History",
-            tlcorner='╭', trcorner='╮',
-            blcorner='╰', brcorner='╯'
-        )
+        right_panel = rounded_box(u.ScrollBar(self.history_listbox), title='Job History')
 
         # === TWO COLUMN LAYOUT ===
         self.columns = u.Columns([

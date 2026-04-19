@@ -5,6 +5,7 @@ import subprocess
 import re
 
 from slop.ui.tab_completion import TabCompletionMixin
+from slop.ui.widgets import rounded_box
 
 
 class SearchOverlay(TabCompletionMixin, u.WidgetWrap):
@@ -55,14 +56,7 @@ class SearchOverlay(TabCompletionMixin, u.WidgetWrap):
         self.pile = pile = u.Pile(widgets)
         filler = u.Filler(pile, valign='top')
 
-        # Wrap in linebox
-        linebox = u.LineBox(
-            filler,
-            title="Search",
-            tlcorner='╭', trcorner='╮',
-            blcorner='╰', brcorner='╯'
-        )
-        body = u.AttrMap(linebox, 'normal')
+        body = u.AttrMap(rounded_box(filler, title='Search'), 'normal')
 
         super().__init__(body)
 

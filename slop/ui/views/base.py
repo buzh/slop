@@ -22,6 +22,7 @@ from slop.ui.widgets import (
     SectionHeader,
     UserItem,
     GenericOverlayText,
+    rounded_box,
 )
 from slop.ui.overlays import JobInfoOverlay
 
@@ -78,19 +79,10 @@ class TwoColumnJobView(u.WidgetWrap):
         entity_list = u.AttrMap(u.ScrollBar(u.ListBox(self.entity_walker)), 'bg')
 
         # Right panel: just the scrollable job list (category headers are inline)
-        self.jw = u.LineBox(
-            u.ScrollBar(self.joblistbox),
-            title=self.right_title_template.format(entity=""),
-            tlcorner='╭', trcorner='╮',
-            blcorner='╰', brcorner='╯'
-        )
+        self.jw = rounded_box(u.ScrollBar(self.joblistbox),
+                              title=self.right_title_template.format(entity=""))
 
-        left_panel = u.LineBox(
-            entity_list,
-            title=self.left_title,
-            tlcorner='╭', trcorner='╮',
-            blcorner='╰', brcorner='╯'
-        )
+        left_panel = rounded_box(entity_list, title=self.left_title)
         right_panel = self.jw
         self.w = u.Columns([('weight', 25, left_panel), ('weight', 75, right_panel)])
 

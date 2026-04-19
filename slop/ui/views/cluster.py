@@ -2,7 +2,7 @@
 import urwid as u
 from slop.models import ClusterResources
 from slop.utils import smart_truncate
-from slop.ui.widgets import SectionHeader
+from slop.ui.widgets import SectionHeader, rounded_box
 
 
 class ScreenViewCluster(u.WidgetWrap):
@@ -14,13 +14,7 @@ class ScreenViewCluster(u.WidgetWrap):
         self.walker = u.SimpleFocusListWalker([])
         self.listbox = u.ListBox(self.walker)
 
-        # Wrap in a LineBox
-        widget = u.LineBox(
-            u.ScrollBar(self.listbox),
-            title="Cluster Resources",
-            tlcorner='╭', trcorner='╮',
-            blcorner='╰', brcorner='╯'
-        )
+        widget = rounded_box(u.ScrollBar(self.listbox), title='Cluster Resources')
         u.WidgetWrap.__init__(self, widget)
 
         # Build initial view

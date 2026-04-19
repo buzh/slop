@@ -2,21 +2,17 @@ import urwid as u
 import datetime
 import time
 from slop.utils import format_duration, nice_tres, compress_int_range
-from slop.slurm import is_running, is_pending, is_ended, job_state_running, job_state_ended, job_state_pending, job_state_short
+from slop.slurm import is_running, is_pending, is_ended, job_state_short
 from slop import __version__
 from slop.ui.style import get_display_attr
 from slop.ui.constants import EMPTY_PLACEHOLDER
 
-class IndentHeader(u.WidgetWrap):
-    def __init__(self, header):
-        indented_widget = u.Columns([
-            ('fixed', 2, u.Text('  ')),
-            header
-        ])
-        super().__init__(indented_widget)
 
-    def selectable(self):
-        return False
+def rounded_box(content, title=''):
+    """LineBox with the project's rounded corners."""
+    return u.LineBox(content, title=title,
+                     tlcorner='╭', trcorner='╮',
+                     blcorner='╰', brcorner='╯')
 
 
 class ChildJobWidget(u.WidgetWrap):
@@ -98,60 +94,11 @@ class ChildJobWidget(u.WidgetWrap):
 
 class ArrayPendWidget(u.WidgetWrap):
     def __init__(self, pending):
-        widget = u.Columns([u.Text(f"  [+ {pending} more pending]")], dividechars=1)
-        widget = u.AttrMap(widget, 'faded', 'normal_selected')
-        super().__init__(widget)
+        text = u.Text(f"  [+ {pending} more pending]")
+        super().__init__(u.AttrMap(text, 'faded', 'normal_selected'))
 
     def selectable(self):
         return False
-
-class UserJobListHeader(u.WidgetWrap): # Dynamic header line item for job walker
-    def __init__(self, parent, joblistwidget):
-        display_attr = joblistwidget.display_attr
-        job_states = joblistwidget.job.states
-        is_array = bool(joblistwidget.job.is_array)
-        is_array_parent = joblistwidget.job.is_array_parent
-        is_running = bool(job_states & job_state_running)
-        is_ended = bool(job_states & job_state_ended)
-        is_pending = bool(job_states & job_state_pending)
-
-        dynamic_labels = {
-            'start_time': lambda: "Running" if is_running else "Started" if is_ended else "Starting",
-            'job_state': lambda: "Status" if is_ended else "S",
-            'wall_time': lambda: "Duration" if not is_pending else "Time",
-            'nodes': lambda: "Nodes",
-        }
-
-        static_labels = {
-            'end_time': "Deadline",
-            'submit_time': "Submitted",
-            'job_id': "Job ID",
-            'task_id': "Task",
-            'account': "Acct",
-            'exit_code': "Exit code",
-            'array_tasks': "Array",
-            'user_name': "User",
-        }
-
-        header = []
-        for headeritem in display_attr:
-            if headeritem in dynamic_labels:
-                label = dynamic_labels[headeritem]()
-            elif headeritem in static_labels:
-                label = static_labels[headeritem]
-            else:
-                label = headeritem.capitalize()
-
-            if parent.sort_col == headeritem:
-                arrow = "↓" if parent.sort_reverse else "↑"
-                label = f"{label} {arrow}"
-
-            h = u.Text(label)
-            header.append((display_attr[headeritem][0], display_attr[headeritem][1], h))
-            
-        widget = u.AttrMap(u.Columns(header, dividechars=1), 'jobheader')
-        super().__init__(widget)
-
 
 class UserJobListWidget(u.WidgetWrap):
     def __init__(self, job, width=None, view_type=None, force_array_tasks_col=False):
@@ -350,16 +297,6 @@ class SectionHeader(u.WidgetWrap):
         super().__init__(u.AttrMap(cols, 'jobheader'))
 
 
-class JobListDivider(u.WidgetWrap):
-    """Divider with optional centered text label."""
-    def __init__(self, text=None):
-        if text:
-            w = u.Columns([u.Divider("-"), ('pack', u.AttrMap(u.Text(text, align='center'), 'jobheader')), u.Divider("-")], dividechars=2)
-        else:
-            w = u.Divider("-")
-        super().__init__(w)
-
-
 class ExpandableGroupMarker(u.WidgetWrap):
     """Selectable text marker for expandable job groups."""
     def __init__(self, text, group_key):
@@ -378,7 +315,7 @@ class Header(u.WidgetWrap):
         self.main_screen = main_screen
         self.text_left = u.Text(f"Slurm Top {__version__}", wrap='clip')
         self.text_right = u.Text("", align='right', wrap='clip')
-        header = u.AttrWrap(u.Columns([self.text_left, self.text_right]), 'header')
+        header = u.AttrMap(u.Columns([self.text_left, self.text_right]), 'header')
         u.WidgetWrap.__init__(self, header)
 
     def update(self, view_name=None):
@@ -393,7 +330,7 @@ class Footer(u.WidgetWrap):
     def __init__(self, main_screen=None):
         self.main_screen = main_screen
         self.text = u.Text("", wrap='clip')
-        footer = u.AttrWrap(self.text, 'footer')
+        footer = u.AttrMap(self.text, 'footer')
         u.WidgetWrap.__init__(self, footer)
 
     def update(self, view_type=None, f1_label=None):
@@ -429,12 +366,7 @@ class GenericOverlayText(u.WidgetWrap):
         self.overlay_height = num_lines + 4 # pad with 4 extra lines
 
         t = u.Text(text, align='center')
-        linebox = u.LineBox(
-            u.Filler(t),
-            tlcorner='╭', trcorner='╮',
-            blcorner='╰', brcorner='╯'
-        )
-        widget = u.AttrMap(linebox, 'bg')
+        widget = u.AttrMap(rounded_box(u.Filler(t)), 'bg')
         u.WidgetWrap.__init__(self, widget)
 
 
@@ -459,13 +391,7 @@ class HelpOverlay(u.WidgetWrap):
                 widgets.append(u.Text(line))
 
         listbox = u.ListBox(u.SimpleFocusListWalker(widgets))
-        linebox = u.LineBox(
-            listbox,
-            title="Help",
-            tlcorner='╭', trcorner='╮',
-            blcorner='╰', brcorner='╯'
-        )
-        widget = u.AttrMap(linebox, 'bg')
+        widget = u.AttrMap(rounded_box(listbox, title='Help'), 'bg')
         u.WidgetWrap.__init__(self, widget)
 
 
@@ -474,12 +400,7 @@ class ProgressOverlay(u.WidgetWrap):
     def __init__(self, main_screen, initial_text):
         self.overlay_height = 10
         self.text_widget = u.Text(initial_text, align='center')
-        linebox = u.LineBox(
-            u.Filler(self.text_widget),
-            tlcorner='╭', trcorner='╮',
-            blcorner='╰', brcorner='╯'
-        )
-        widget = u.AttrMap(linebox, 'bg')
+        widget = u.AttrMap(rounded_box(u.Filler(self.text_widget)), 'bg')
         u.WidgetWrap.__init__(self, widget)
 
     def update_text(self, text):

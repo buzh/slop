@@ -4,6 +4,7 @@ import urwid as u
 import datetime
 from slop.utils import format_duration
 from slop.ui.constants import EMPTY_PLACEHOLDER
+from slop.ui.widgets import rounded_box
 
 
 class QueueJobWidget(u.WidgetWrap):
@@ -328,12 +329,7 @@ class ScreenViewQueue(u.WidgetWrap):
             u.ScrollBar(self.job_listbox)
         ])
 
-        self.container = u.LineBox(
-            pile,
-            title="Queue Status - Pending Jobs by Priority",
-            tlcorner='╭', trcorner='╮',
-            blcorner='╰', brcorner='╯'
-        )
+        self.container = rounded_box(pile, title='Queue Status - Pending Jobs by Priority')
 
         body = u.AttrMap(self.container, 'bg')
 

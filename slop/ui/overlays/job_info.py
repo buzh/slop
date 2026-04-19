@@ -4,6 +4,7 @@ import datetime
 from slop.slurm import is_running, is_ended, is_pending, reasons
 from slop.utils import format_duration, nice_tres
 from slop.ui.constants import EMPTY_PLACEHOLDER
+from slop.ui.widgets import rounded_box
 
 
 class JobInfoOverlay(u.WidgetWrap):
@@ -29,16 +30,9 @@ class JobInfoOverlay(u.WidgetWrap):
         walker = u.SimpleFocusListWalker(widgets)
         listbox = u.ListBox(walker)
 
-        # Wrap in LineBox with title showing job ID and state
         state = ' '.join(job.job_state)
-        title = f"Job {job.job_id} - {state}"
-        body = u.LineBox(
-            listbox,
-            title=title,
-            tlcorner='╭', trcorner='╮',
-            blcorner='╰', brcorner='╯'
-        )
-        body = u.AttrMap(body, 'normal', 'normal')
+        body = u.AttrMap(rounded_box(listbox, title=f"Job {job.job_id} - {state}"),
+                         'normal', 'normal')
         super().__init__(body)
 
     def build_widgets(self):
