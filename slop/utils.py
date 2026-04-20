@@ -32,27 +32,47 @@ def compress_int_range(numbers):
     return ",".join(ranges)
 
 
-def nice_tres(job):
-    # Get tres string, prefer allocated over requested
-    tres_str = getattr(job, 'tres_alloc_str', '') or getattr(job, 'tres_req_str', '')
+def _parse_tres(tres_str):
+    """Parse a Slurm TRES string into {key: value}, plus a gputype side channel."""
+    parsed = {}
+    gputype = None
+    for entry in tres_str.split(','):
+        if '=' not in entry:
+            continue
+        key, value = entry.split('=', 1)
+        if key.startswith('gres/gpu:'):
+            gputype = key.split(':', 1)[1]
+        else:
+            parsed[key] = value
+    return parsed, gputype
 
-    # If no tres string available, return empty
+
+def _format_mem(mem_str):
+    """'64000M' -> '64G', '512M' -> '512M', '2T' -> '2T'."""
+    if not mem_str:
+        return ''
+    m = re.match(r'^(\d+(?:\.\d+)?)([KMGT]?)$', mem_str.strip())
+    if not m:
+        return mem_str
+    val = float(m.group(1))
+    unit = m.group(2) or 'M'
+    if unit == 'M' and val >= 1024:
+        val /= 1024
+        unit = 'G'
+    if unit == 'G' and val >= 1024:
+        val /= 1024
+        unit = 'T'
+    if val == int(val):
+        return f"{int(val)}{unit}"
+    return f"{val:.1f}{unit}"
+
+
+def nice_tres(job):
+    """Verbose TRES summary, e.g. '16 cores, 64000M mem, 2 GPUs (a100), 1 nodes'."""
+    tres_str = getattr(job, 'tres_alloc_str', '') or getattr(job, 'tres_req_str', '')
     if not tres_str or not tres_str.strip():
         return ''
-
-    req = tres_str.split(',')
-    req_tres = {}
-    req_tres['gputype'] = None
-
-    for i in req:
-        if '=' not in i:
-            continue  # Skip malformed entries
-        key, value = i.split('=', 1)  # Use maxsplit=1 in case value contains '='
-        if re.match(r'gres\/gpu:', key):
-            x = re.split(":", key, 1)
-            req_tres['gputype'] = x[1]
-        else:
-            req_tres[key] = value
+    req_tres, gputype = _parse_tres(tres_str)
 
     parts = []
     if 'cpu' in req_tres:
@@ -60,11 +80,42 @@ def nice_tres(job):
     if 'mem' in req_tres:
         parts.append(f"{req_tres['mem']} mem")
     if 'gres/gpu' in req_tres:
-        parts.append(f"{req_tres['gres/gpu']} GPUs ({req_tres['gputype']})")
+        parts.append(f"{req_tres['gres/gpu']} GPUs ({gputype})")
     if 'node' in req_tres:
         parts.append(f"{req_tres['node']} nodes")
 
     return ', '.join(parts)
+
+
+def compact_tres(job):
+    """Compact one-line TRES summary, e.g. '16c 64G 2×A100 4n'.
+
+    Nodes column is dropped when the job uses a single node (the common case).
+    """
+    tres_str = getattr(job, 'tres_alloc_str', '') or getattr(job, 'tres_req_str', '')
+    return compact_tres_str(tres_str)
+
+
+def compact_tres_str(tres_str):
+    """compact_tres counterpart that takes a raw TRES string (used for snapshots)."""
+    if not tres_str or not tres_str.strip():
+        return ''
+    parsed, gputype = _parse_tres(tres_str)
+
+    parts = []
+    if 'cpu' in parsed:
+        parts.append(f"{parsed['cpu']}c")
+    if 'mem' in parsed:
+        m = _format_mem(parsed['mem'])
+        if m:
+            parts.append(m)
+    if 'gres/gpu' in parsed:
+        n = parsed['gres/gpu']
+        parts.append(f"{n}×{gputype.upper()}" if gputype else f"{n}gpu")
+    nodes = parsed.get('node')
+    if nodes and nodes != '1':
+        parts.append(f"{nodes}n")
+    return ' '.join(parts)
 
 def format_duration(seconds): # turns seconds into 1d2h3m4s
     try:

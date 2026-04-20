@@ -370,6 +370,7 @@ class TwoColumnJobView(u.WidgetWrap):
             'name': "Name",
             'reason': "Reason",
             'tres': "Resources",
+            'resources': "Resources",
         }
 
         # Build SORT_KEYS mapping based on current visible columns

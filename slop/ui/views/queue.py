@@ -22,7 +22,7 @@ import urwid as u
 import datetime
 import re
 import time
-from slop.utils import format_duration
+from slop.utils import format_duration, compact_tres, compact_tres_str
 from slop.ui.constants import EMPTY_PLACEHOLDER
 from slop.ui.widgets import rounded_box
 
@@ -95,22 +95,6 @@ def _format_wait(submit_time):
     return _coarse_duration(wait)
 
 
-def _size_indicator(job):
-    cpus_obj = getattr(job, 'cpus', {})
-    if isinstance(cpus_obj, dict):
-        cpus = cpus_obj.get('number', 1)
-    else:
-        cpus = cpus_obj if isinstance(cpus_obj, int) else 1
-    tl = getattr(job, 'time_limit', {})
-    minutes = tl.get('number', 60) if isinstance(tl, dict) and tl.get('set') else 60
-    core_hours = (cpus * minutes) / 60
-    if core_hours < 100:
-        return "▪"
-    if core_hours < 1000:
-        return "▪▪"
-    return "▪▪▪"
-
-
 def _time_limit_str(job):
     tl = getattr(job, 'time_limit', {})
     if isinstance(tl, dict) and tl.get('set'):
@@ -153,34 +137,9 @@ def _state_attr(state):
     return 'normal'
 
 
-def _resources_str(cpus, mem):
-    parts = []
-    if cpus:
-        parts.append(f"{cpus}c")
-    if mem:
-        parts.append(mem)
-    return ' '.join(parts) or EMPTY_PLACEHOLDER
-
-
 def _snapshot_job(job):
     """Capture enough data to render a row even after the job leaves scontrol."""
     state = job.job_state[0] if getattr(job, 'job_state', None) else 'UNKNOWN'
-    cpus_obj = getattr(job, 'cpus', {})
-    if isinstance(cpus_obj, dict):
-        cpus = cpus_obj.get('number', 0) if cpus_obj.get('set', True) else 0
-    else:
-        cpus = cpus_obj or 0
-
-    # Memory: prefer per-node when set (gives the absolute number), else
-    # multiply per-cpu by the cpu count to get total bytes-per-task.
-    mem = ''
-    mpn = getattr(job, 'memory_per_node', {})
-    mpc = getattr(job, 'memory_per_cpu', {})
-    if isinstance(mpn, dict) and mpn.get('set') and mpn.get('number'):
-        mem = f"{int(mpn['number'])}M"
-    elif isinstance(mpc, dict) and mpc.get('set') and mpc.get('number'):
-        mem = f"{int(mpc['number']) * max(cpus, 1)}M"
-
     return {
         'jobid': job.job_id,
         'name': (getattr(job, 'name', None) or EMPTY_PLACEHOLDER),
@@ -193,8 +152,7 @@ def _snapshot_job(job):
         'time_limit_min': (getattr(job, 'time_limit', {}).get('number', 0)
                            if isinstance(getattr(job, 'time_limit', {}), dict)
                            and getattr(job, 'time_limit', {}).get('set') else 0),
-        'cpus': cpus,
-        'mem': mem,
+        'resources': compact_tres(job),
         'returncode': getattr(job, 'returncode', EMPTY_PLACEHOLDER),
     }
 
@@ -202,32 +160,33 @@ def _snapshot_job(job):
 # ----- Lifecycle row formatters -------------------------------------------
 
 def _format_ended_row(width, *, state, jobid, user, partition,
-                      used, limit, exit_code, name):
+                      used, limit, exit_code, resources, name):
     if width < 100:
         return f"{state:>3} {jobid:>9} {user:<10} {used:>8}/{limit:<8} {name:<20}"
     return (f"{state:>3} {jobid:>9} {user:<12} {partition:<14} "
-            f"{used:>9}/{limit:<9} {exit_code:>8}  {name:<40}")
+            f"{used:>9}/{limit:<9} {exit_code:>6}  {resources:<18} {name:<25}")
 
 
 def _ended_header(width):
     return _format_ended_row(
         width, state='St', jobid='Job ID', user='User', partition='Partition',
-        used='Used', limit='Limit', exit_code='Exit', name='Name',
+        used='Used', limit='Limit', exit_code='Exit',
+        resources='Resources', name='Name',
     )
 
 
 def _format_finishing_row(width, *, state, jobid, user, partition,
-                          remaining, ran, name):
+                          remaining, ran, resources, name):
     if width < 100:
         return f"{state:>3} {jobid:>9} {user:<10} {remaining:>10} {name:<25}"
     return (f"{state:>3} {jobid:>9} {user:<12} {partition:<14} "
-            f"{remaining:>11} {ran:>11}  {name:<40}")
+            f"{remaining:>11} {ran:>11}  {resources:<18} {name:<25}")
 
 
 def _finishing_header(width):
     return _format_finishing_row(
         width, state='St', jobid='Job ID', user='User', partition='Partition',
-        remaining='Remaining', ran='Ran', name='Name',
+        remaining='Remaining', ran='Ran', resources='Resources', name='Name',
     )
 
 
@@ -236,7 +195,7 @@ def _format_started_row(width, *, state, jobid, user, partition,
     if width < 100:
         return f"{state:>3} {jobid:>9} {user:<10} {wait:>10} {ran:>10} {name:<20}"
     return (f"{state:>3} {jobid:>9} {user:<12} {partition:<14} "
-            f"{wait:>10} {ran:>10}  {resources:<18} {name:<35}")
+            f"{wait:>10} {ran:>10}  {resources:<18} {name:<25}")
 
 
 def _started_header(width):
@@ -247,18 +206,18 @@ def _started_header(width):
 
 
 def _format_about_row(width, *, eta, jobid, user, partition, priority,
-                      reason, size, tlim, wait, name):
+                      reason, resources, tlim, wait, name):
     if width < 100:
         return f"{eta:<13} {jobid:>9} {user:<10} {partition:<12} {reason:<14} {name:<20}"
     return (f"{eta:<14} {jobid:>9} {user:<12} {partition:<14} "
-            f"{priority:>8} {reason:<16} {size:<3} {tlim:>10} {wait:>9}  {name:<30}")
+            f"{priority:>8} {reason:<14} {resources:<18} {tlim:>9} {wait:>9}  {name:<20}")
 
 
 def _about_header(width):
     return _format_about_row(
         width, eta='ETA', jobid='Job ID', user='User', partition='Partition',
-        priority='Priority', reason='Reason', size='Sz', tlim='Time',
-        wait='Waited', name='Name',
+        priority='Priority', reason='Reason', resources='Resources',
+        tlim='Time', wait='Waited', name='Name',
     )
 
 
@@ -287,8 +246,9 @@ class EndedJobWidget(_ReadOnlyRow):
             partition=str(snap['partition'])[:14],
             used=used_str[:9],
             limit=limit_str[:9],
-            exit_code=str(snap['returncode'])[:8],
-            name=str(snap['name'])[:40],
+            exit_code=str(snap['returncode'])[:6],
+            resources=(snap.get('resources') or EMPTY_PLACEHOLDER)[:18],
+            name=str(snap['name'])[:25],
         )
         super().__init__(u.AttrMap(u.Text(text), _state_attr(snap['state'])))
 
@@ -311,7 +271,8 @@ class FinishingJobWidget(_ReadOnlyRow):
             partition=_job_partition(job)[:14],
             remaining=remaining[:11],
             ran=ran[:11],
-            name=str(getattr(job, 'name', EMPTY_PLACEHOLDER) or EMPTY_PLACEHOLDER)[:40],
+            resources=(compact_tres(job) or EMPTY_PLACEHOLDER)[:18],
+            name=str(getattr(job, 'name', EMPTY_PLACEHOLDER) or EMPTY_PLACEHOLDER)[:25],
         )
         # Warning attr if <5 min remaining, else normal.
         attr = 'warning' if (end_ts and end_ts - now < 300) else 'normal'
@@ -336,8 +297,8 @@ class StartedJobWidget(_ReadOnlyRow):
             partition=str(snap['partition'])[:14],
             wait=wait_str[:10],
             ran=ran_str[:10],
-            resources=_resources_str(snap['cpus'], snap['mem'])[:18],
-            name=str(snap['name'])[:35],
+            resources=(snap.get('resources') or EMPTY_PLACEHOLDER)[:18],
+            name=str(snap['name'])[:25],
         )
         super().__init__(u.AttrMap(u.Text(text), _state_attr(snap['state'])))
 
@@ -366,7 +327,7 @@ class AboutToStartJobWidget(u.WidgetWrap):
         reason = getattr(job, 'state_reason', EMPTY_PLACEHOLDER) or EMPTY_PLACEHOLDER
         user = getattr(job, 'user_name', EMPTY_PLACEHOLDER)
         partition = _job_partition(job)
-        size = _size_indicator(job)
+        resources = compact_tres(job) or EMPTY_PLACEHOLDER
         tlim = _time_limit_str(job)
         wait = _format_wait(getattr(job, 'submit_time', {}))
         name = job.name or EMPTY_PLACEHOLDER
@@ -375,8 +336,9 @@ class AboutToStartJobWidget(u.WidgetWrap):
             self.width,
             eta=eta[:14], jobid=str(job.job_id)[:9],
             user=user[:12], partition=partition[:14],
-            priority=str(priority)[:8], reason=reason[:16],
-            size=size, tlim=tlim[:10], wait=wait[:9], name=name[:30],
+            priority=str(priority)[:8], reason=reason[:14],
+            resources=resources[:18], tlim=tlim[:9], wait=wait[:9],
+            name=name[:20],
         )
         # Soonest jobs (within 5 min or already overdue) get the success attr
         # so they pop visually; everything else stays neutral.

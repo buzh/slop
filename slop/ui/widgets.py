@@ -1,7 +1,7 @@
 import urwid as u
 import datetime
 import time
-from slop.utils import format_duration, nice_tres, compress_int_range
+from slop.utils import format_duration, nice_tres, compact_tres, compress_int_range
 from slop.slurm import is_running, is_pending, is_ended, job_state_short
 from slop import __version__
 from slop.ui.style import get_display_attr
@@ -250,6 +250,8 @@ class UserJobListWidget(u.WidgetWrap):
                 t = job.returncode
             elif col == "tres":
                 t = nice_tres(job)
+            elif col == "resources":
+                t = compact_tres(job) or EMPTY_PLACEHOLDER
             else:
                 t = str(value)
 
