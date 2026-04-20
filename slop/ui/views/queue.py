@@ -133,13 +133,16 @@ def _format_header(width):
 # ----- Widgets ------------------------------------------------------------
 
 class QueueJobWidget(u.WidgetWrap):
-    """One pending job row."""
+    """One pending job row. `parent_group_key` is set when this row is an
+    expanded child of a QueueGroupWidget so 'e' from the child can still
+    collapse the parent group."""
 
-    def __init__(self, job, rank, width=120):
+    def __init__(self, job, rank, width=120, parent_group_key=None):
         self.job = job
         self.jobid = job.job_id
         self.rank = rank
         self.width = width
+        self.parent_group_key = parent_group_key
         super().__init__(self._build())
 
     def selectable(self):
@@ -168,14 +171,18 @@ class QueueJobWidget(u.WidgetWrap):
 
 
 class QueueGroupWidget(u.WidgetWrap):
-    """Collapsed bundle of consecutive same-(user, reason) jobs in one partition."""
+    """Header row for a bundle of consecutive same-(user, reason) jobs.
+    Stays visible whether the group is expanded or collapsed; the marker
+    (▶/▼) shows the current state."""
 
-    def __init__(self, group_key, start_rank, end_rank, group, width=120):
+    def __init__(self, group_key, start_rank, end_rank, group, width=120,
+                 expanded=False):
         self.group_key = group_key
         self.start_rank = start_rank
         self.end_rank = end_rank
         self.job_group = group
         self.width = width
+        self.expanded = expanded
         super().__init__(self._build())
 
     def selectable(self):
@@ -185,8 +192,17 @@ class QueueGroupWidget(u.WidgetWrap):
         return key
 
     def _build(self):
-        first = self.job_group[0]
         count = len(self.job_group)
+        rng = (f"#{self.start_rank}" if self.start_rank == self.end_rank
+               else f"#{self.start_rank}-{self.end_rank}")
+
+        if self.expanded:
+            # Compact subheader — the children below carry per-row detail, so
+            # repeating priority/user/eta on the header would just be noise.
+            line = f"  ▼ [{count} jobs {rng}]".ljust(max(self.width, 1))
+            return u.AttrMap(u.Text(line), 'faded', 'normal_selected')
+
+        first = self.job_group[0]
         priority = max(_job_priority(j) for j in self.job_group)
         eta = _format_eta(getattr(first, 'start_time', {}))
         wait = _format_wait(getattr(first, 'submit_time', {}))
@@ -208,9 +224,7 @@ class QueueGroupWidget(u.WidgetWrap):
         else:
             tlim = EMPTY_PLACEHOLDER
 
-        name = (f"[{count} jobs]" if self.start_rank == self.end_rank
-                else f"[{count} jobs #{self.start_rank}-{self.end_rank}]")
-
+        name = f"▶ [{count} jobs {rng}]"
         text = _format_row(
             self.width, rank=str(self.start_rank), priority=str(priority),
             eta=eta[:13], wait=wait[:8], reason=reason[:18],
@@ -243,6 +257,9 @@ class ScreenViewQueue(u.WidgetWrap):
         self.main_screen = main_screen
         self.jobs = jobs
         self.expanded_groups = set()
+        # Focus anchors restored across rebuilds (refresh, expand/collapse).
+        self.selected_jobid = None
+        self.selected_group_key = None
 
         self.summary_text = u.Text("")
         self.col_header_text = u.AttrMap(u.Text(""), 'jobheader')
@@ -337,21 +354,49 @@ class ScreenViewQueue(u.WidgetWrap):
                     key = f"{partition}:{s}-{e}"
                     if n == 1:
                         widgets.append(QueueJobWidget(group[0], rank, width=width))
-                    elif key in self.expanded_groups:
-                        for i, job in enumerate(group):
-                            widgets.append(QueueJobWidget(job, s + i, width=width))
                     else:
-                        widgets.append(QueueGroupWidget(key, s, e, group, width=width))
+                        expanded = key in self.expanded_groups
+                        widgets.append(QueueGroupWidget(
+                            key, s, e, group, width=width, expanded=expanded,
+                        ))
+                        if expanded:
+                            for i, job in enumerate(group):
+                                widgets.append(QueueJobWidget(
+                                    job, s + i, width=width, parent_group_key=key,
+                                ))
                     rank += n
 
         self.job_walker.extend(widgets)
+        self._restore_focus()
 
-        # Leave focus at index 0 (the first partition header). If we focused
-        # the first job instead, the listbox would scroll the partition
-        # header off the top. The header is non-selectable so arrow keys
-        # still find the first job on first keypress.
-        if len(self.job_walker):
-            self.job_walker.set_focus(0)
+    def _restore_focus(self):
+        """Re-anchor focus on the previously-selected job or group."""
+        if not len(self.job_walker):
+            return
+        if self.selected_jobid is not None:
+            for i, w in enumerate(self.job_walker):
+                if getattr(w, 'jobid', None) == self.selected_jobid:
+                    self.job_walker.set_focus(i)
+                    return
+        if self.selected_group_key is not None:
+            for i, w in enumerate(self.job_walker):
+                if getattr(w, 'group_key', None) == self.selected_group_key:
+                    self.job_walker.set_focus(i)
+                    return
+        # First render or previously-focused row vanished: focus the first
+        # partition header so the listbox doesn't scroll past it.
+        self.job_walker.set_focus(0)
+
+    def _capture_focus(self):
+        """Snapshot current focus so the next rebuild can restore it."""
+        focus_w, _ = self.job_listbox.get_focus()
+        if focus_w is None:
+            return
+        self.selected_jobid = getattr(focus_w, 'jobid', None)
+        self.selected_group_key = (
+            getattr(focus_w, 'group_key', None)
+            or getattr(focus_w, 'parent_group_key', None)
+        )
 
     def keypress(self, size, key):
         if self.main_screen.overlay_showing:
@@ -359,19 +404,37 @@ class ScreenViewQueue(u.WidgetWrap):
 
         focus_w, _ = self.job_listbox.get_focus()
 
-        if key in ('e', 'enter', ' '):
+        if key in ('e', 'enter', ' ') and focus_w is not None:
+            # 'e' always toggles the containing group, even from a child row.
+            if key == 'e':
+                gkey = (getattr(focus_w, 'group_key', None)
+                        or getattr(focus_w, 'parent_group_key', None))
+                if gkey:
+                    self._toggle_group(gkey)
+                    return None
+
+            # Enter/Space on a group header toggles it; on a job opens info.
             if hasattr(focus_w, 'group_key'):
-                if focus_w.group_key in self.expanded_groups:
-                    self.expanded_groups.remove(focus_w.group_key)
-                else:
-                    self.expanded_groups.add(focus_w.group_key)
-                self.update()
+                self._toggle_group(focus_w.group_key)
                 return None
-            if hasattr(focus_w, 'jobid') and key in ('enter', ' '):
+            if hasattr(focus_w, 'jobid'):
                 from slop.ui.overlays import JobInfoOverlay
                 job = self.jobs.job_index.get(focus_w.jobid)
                 if job:
                     self.main_screen.open_overlay(JobInfoOverlay(job, self.main_screen))
                 return None
 
-        return super().keypress(size, key)
+        result = super().keypress(size, key)
+        self._capture_focus()
+        return result
+
+    def _toggle_group(self, key):
+        if key in self.expanded_groups:
+            self.expanded_groups.remove(key)
+        else:
+            self.expanded_groups.add(key)
+        # Anchor focus on the group header so the rebuilt list comes back to
+        # it (whether we toggled from the header itself or from a child row).
+        self.selected_group_key = key
+        self.selected_jobid = None
+        self.update()
