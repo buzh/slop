@@ -53,8 +53,6 @@ def build_help_text(current_view, fetch_duration):
         ("success", "QUEUE VIEW (F7)"),
         "  e        Expand/collapse grouped jobs",
         "  Enter    Show job details or expand group",
-        "  PriMix   Stacked bar shows what makes up each job's priority",
-        "             (color-coded by component; legend in panel header)",
         "",
         ("success", "SEARCH (/)"),
         "  Tab      Autocomplete suggestions",

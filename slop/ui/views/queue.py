@@ -11,86 +11,77 @@ from slop.ui.constants import EMPTY_PLACEHOLDER
 from slop.ui.widgets import rounded_box
 
 
-# Component → (legend label, urwid attr). Order matters: it sets the visual
-# stacking order in the bar (left → right).
+# Component → (label, urwid attr, weight-config key). Order is left→right
+# in the bar. Components whose PriorityWeight* is 0/null are skipped.
 PRIORITY_COMPONENTS = (
-    ('age',         'AGE',  'info'),
-    ('fairshare',   'FS',   'warning'),
-    ('qos_pri',     'QOS',  'success'),
-    ('jobsize',     'JS',   'state_failed'),
-    ('partition_pri','PART','state_pending'),
-    ('tres',        'TRES', 'normal'),
-    ('sitefactor',  'SITE', 'faded'),
+    ('age',           'A', 'info',          'PriorityWeightAge'),
+    ('fairshare',     'F', 'warning',       'PriorityWeightFairShare'),
+    ('qos_pri',       'Q', 'success',       'PriorityWeightQOS'),
+    ('jobsize',       'J', 'state_failed',  'PriorityWeightJobSize'),
+    ('partition_pri', 'P', 'state_pending', 'PriorityWeightPartition'),
+    ('tres',          'T', 'normal',        'PriorityWeightTRES'),
 )
 
-# Map sprio component key → corresponding PriorityWeight* config key.
-WEIGHT_KEYS = {
-    'age':           'PriorityWeightAge',
-    'fairshare':     'PriorityWeightFairShare',
-    'qos_pri':       'PriorityWeightQOS',
-    'jobsize':       'PriorityWeightJobSize',
-    'partition_pri': 'PriorityWeightPartition',
-    'tres':          'PriorityWeightTRES',
-}
+# 9 fill levels for a single cell: empty → full.
+_FILL_LEVELS = ' ▁▂▃▄▅▆▇█'
 
 
-def _build_priority_bar(components, bar_width):
-    """Return urwid markup for a stacked bar showing per-job component mix.
+def _enabled_components(weights):
+    """List of (key, label, attr, weight) for components with nonzero weight."""
+    out = []
+    for key, label, attr, wkey in PRIORITY_COMPONENTS:
+        w = (weights.get(wkey) or 0) if weights else 0
+        if w > 0:
+            out.append((key, label, attr, w))
+    return out
 
-    `components` is the per-job sprio dict. Bar is normalized to that job's
-    own priority total (so it answers "what makes up THIS job's priority").
-    Empty cells are filled with faded dashes.
+
+def _fill_cell(value, ceiling):
+    """Pick a block character whose fill height = value / ceiling."""
+    if ceiling <= 0 or value <= 0:
+        return ' '
+    frac = min(1.0, value / ceiling)
+    idx = max(1, min(8, int(round(frac * 8))))
+    return _FILL_LEVELS[idx]
+
+
+def _build_priority_bar(components, enabled):
+    """Return urwid markup for a per-component utilization bar.
+
+    Each enabled component gets one cell; the cell's fill height shows what
+    fraction of that component's weight the job has earned. Color identifies
+    the component (matching the legend in the panel header).
     """
-    if not components or bar_width <= 0:
-        return [('faded', '─' * bar_width)]
+    if not enabled:
+        return [('faded', '·')]
+    if not components:
+        return [('faded', '·' * len(enabled))]
 
-    contributions = []
-    total = 0
-    for key, _label, attr in PRIORITY_COMPONENTS:
-        val = components.get(key, 0) or 0
-        if val > 0:
-            contributions.append((attr, val))
-            total += val
-
-    if total == 0:
-        return [('faded', '─' * bar_width)]
-
-    # Largest-remainder allocation so the bar always uses exactly bar_width chars.
-    raw = [(attr, val * bar_width / total) for attr, val in contributions]
-    floors = [(attr, int(r)) for attr, r in raw]
-    used = sum(n for _, n in floors)
-    remainder = bar_width - used
-    # Distribute leftover chars to fractions with the largest remainders.
-    order = sorted(range(len(raw)), key=lambda i: -(raw[i][1] - int(raw[i][1])))
-    extras = [0] * len(raw)
-    for i in order[:remainder]:
-        extras[i] = 1
     segments = []
-    for (attr, n), extra in zip(floors, extras):
-        n += extra
-        if n > 0:
-            segments.append((attr, '█' * n))
-    return segments or [('faded', '─' * bar_width)]
+    for key, _label, attr, weight in enabled:
+        ch = _fill_cell(components.get(key, 0) or 0, weight)
+        if ch == ' ':
+            segments.append(('faded', '·'))
+        else:
+            segments.append((attr, ch))
+    return segments
 
 
-def _bar_width_for(layout_width):
-    """Width of the stacked component bar for a given layout width category."""
-    if layout_width < 100:
-        return 6
-    if layout_width < 140:
-        return 8
-    return 10
+def _bar_width_for(enabled):
+    """Bar width = one cell per enabled priority component."""
+    return max(1, len(enabled))
 
 
 class QueueJobWidget(u.WidgetWrap):
     """Widget for displaying a single pending job in the queue view."""
 
-    def __init__(self, job, rank, width=None, sprio_row=None):
+    def __init__(self, job, rank, width=None, sprio_row=None, enabled_components=None):
         self.job = job
         self.jobid = job.job_id
         self.rank = rank
         self.width = width or 120
         self.sprio_row = sprio_row
+        self.enabled_components = enabled_components or []
 
         widget = self._build_widget()
         super().__init__(widget)
@@ -136,25 +127,22 @@ class QueueJobWidget(u.WidgetWrap):
         qos = getattr(job, 'qos', EMPTY_PLACEHOLDER)
         username = getattr(job, 'user_name', EMPTY_PLACEHOLDER)
 
-        bar_width = _bar_width_for(self.width)
-        bar_segments = _build_priority_bar(self.sprio_row, bar_width)
-
+        bar_segments = _build_priority_bar(self.sprio_row, self.enabled_components)
         row_attr = self._get_color_attr(reason)
 
-        # Layout: rank(3) priority(6) bar(bar_width) [columns...]
+        # Layout: rank(3) priority(6) bar [columns...]
         prefix = [f"{self.rank:>3} {priority_num:>6} "]
-        bar = list(bar_segments)
         if self.width < 100:
-            tail = f" {size_indicator:<3} {duration_str:>7} {username[:8]:<8} {job.name[:15]:<15}"
+            tail = f"  {size_indicator:<3} {duration_str:>7} {username[:8]:<8} {job.name[:15]:<15}"
         elif self.width < 140:
-            tail = (f" {size_indicator:<3} {duration_str:>7} {eta_str[:14]:<14} "
+            tail = (f"  {size_indicator:<3} {duration_str:>7} {eta_str[:14]:<14} "
                     f"{username[:10]:<10} {reason[:12]:<12} {job.name[:20]:<20}")
         else:
-            tail = (f" {size_indicator:<3} {duration_str:>7} {eta_str[:14]:<14} "
+            tail = (f"  {size_indicator:<3} {duration_str:>7} {eta_str[:14]:<14} "
                     f"{wait_str[:11]:>11} {username[:10]:<10} {qos[:8]:<8} "
                     f"{reason[:15]:<15} {resource_str[:18]:<18} {job.name[:25]:<25}")
 
-        markup = prefix + bar + [tail]
+        markup = prefix + list(bar_segments) + [tail]
         return u.AttrMap(u.Text(markup), row_attr, 'normal_selected')
 
     def _get_size_indicator(self):
@@ -266,13 +254,15 @@ class QueueJobWidget(u.WidgetWrap):
 class QueueGroupWidget(u.WidgetWrap):
     """Widget for a collapsed group of jobs (same user + reason)."""
 
-    def __init__(self, start_rank, end_rank, job_group, width=None, sprio=None):
+    def __init__(self, start_rank, end_rank, job_group, width=None,
+                 sprio=None, enabled_components=None):
         self.start_rank = start_rank
         self.end_rank = end_rank
         self.job_group = job_group
         self.group_key = f"{start_rank}-{end_rank}"
         self.width = width or 120
         self.sprio = sprio or {}
+        self.enabled_components = enabled_components or []
 
         widget = self._build_widget()
         super().__init__(widget)
@@ -335,23 +325,23 @@ class QueueGroupWidget(u.WidgetWrap):
             row = self.sprio.get(j.job_id)
             if row:
                 sampled += 1
-                for key, _, _ in PRIORITY_COMPONENTS:
+                for key, _, _, _ in PRIORITY_COMPONENTS:
                     aggregated[key] = aggregated.get(key, 0) + (row.get(key, 0) or 0)
         if sampled:
             for k in aggregated:
                 aggregated[k] //= max(sampled, 1)
-        bar_width = _bar_width_for(self.width)
-        bar = list(_build_priority_bar(aggregated if sampled else None, bar_width))
+        bar = list(_build_priority_bar(aggregated if sampled else None,
+                                       self.enabled_components))
 
         ph = EMPTY_PLACEHOLDER
         prefix = [f"{rank_num:>3} {priority_num:>6} "]
         if self.width < 100:
-            tail = f" {size_indicator:<3} {duration_str:>7} {username[:8]:<8} {name_col[:15]:<15}"
+            tail = f"  {size_indicator:<3} {duration_str:>7} {username[:8]:<8} {name_col[:15]:<15}"
         elif self.width < 140:
-            tail = (f" {size_indicator:<3} {duration_str:>7} {ph:<14} "
+            tail = (f"  {size_indicator:<3} {duration_str:>7} {ph:<14} "
                     f"{username[:10]:<10} {reason[:12]:<12} {name_col[:20]:<20}")
         else:
-            tail = (f" {size_indicator:<3} {duration_str:>7} {ph:<14} "
+            tail = (f"  {size_indicator:<3} {duration_str:>7} {ph:<14} "
                     f"{ph:>11} {username[:10]:<10} {ph:<8} "
                     f"{reason[:15]:<15} {ph:<18} {name_col[:25]:<25}")
 
@@ -406,9 +396,8 @@ class ScreenViewQueue(u.WidgetWrap):
     def _sprio_data(self):
         return self.sprio_fetcher.fetch_sync() if self.sprio_fetcher else {}
 
-    def _summary_markup(self, pending_jobs, with_eta, sprio_count):
+    def _summary_markup(self, pending_jobs, with_eta, sprio_count, enabled):
         """Top summary line + priority-weight legend line."""
-        weights = self.priority_weights
         total = len(pending_jobs)
 
         line1 = [
@@ -419,31 +408,22 @@ class ScreenViewQueue(u.WidgetWrap):
             '   ',
             f'sprio rows: {sprio_count}',
         ]
-        if not weights:
-            return [line1, ['']]
+        if not enabled:
+            return [line1, [('faded', '  (no PriorityWeight* configured)')]]
 
-        # Legend: only show components with non-zero weight.
-        legend = ['  Weights/legend:  ']
-        has_any = False
-        for key, label, attr in PRIORITY_COMPONENTS:
-            wkey = WEIGHT_KEYS.get(key)
-            if not wkey:
-                continue
-            w = weights.get(wkey, 0) or 0
-            if w <= 0:
-                continue
-            has_any = True
-            legend.append((attr, '█'))
-            legend.append(f' {label}:{w}  ')
-        if not has_any:
-            legend.append(('faded', '(no PriorityWeight* configured)'))
+        # Legend: each component shows its letter (colored) and weight ceiling.
+        # Trailing hint explains the cell fill levels.
+        legend = ['  Components (cell = % of weight earned):  ']
+        for _key, label, attr, weight in enabled:
+            legend.append((attr, label))
+            legend.append(f':{weight}  ')
+        legend.append(('faded', f'fill: {_FILL_LEVELS[1]}…{_FILL_LEVELS[8]} (12%→100%)'))
         return [line1, legend]
 
-    def _refresh_summary(self, pending_jobs, with_eta):
+    def _refresh_summary(self, pending_jobs, with_eta, enabled):
         sprio = self._sprio_data()
         sprio_count = sum(1 for j in pending_jobs if j.job_id in sprio)
-        line1, line2 = self._summary_markup(pending_jobs, with_eta, sprio_count)
-        # Combine into one Text with newline; urwid handles multi-line markup.
+        line1, line2 = self._summary_markup(pending_jobs, with_eta, sprio_count, enabled)
         markup = list(line1) + ['\n'] + list(line2)
         self.summary_text.set_text(markup)
 
@@ -452,14 +432,18 @@ class ScreenViewQueue(u.WidgetWrap):
         widgets = []
 
         available_width = self.main_screen.width - 3 if hasattr(self.main_screen, 'width') else 120
-        bar_width = _bar_width_for(available_width)
         sprio = self._sprio_data()
+        enabled = _enabled_components(self.priority_weights)
+        bar_width = _bar_width_for(enabled)
 
         self.container.set_title("Queue Status - Pending Jobs by Priority (grouped by user)")
 
-        # Column header — bar slot is labeled "PriMix" (compact label that
-        # fits in the narrow 6-char layout). Legend above explains the colors.
-        bar_label = "PriMix".center(bar_width)[:bar_width]
+        # Column header — bar cells are labeled with their component letters
+        # (e.g. "AFQ" for Age/FairShare/QOS).
+        if enabled:
+            bar_label = ''.join(lbl for _, lbl, _, _ in enabled)
+        else:
+            bar_label = '·' * bar_width
         if available_width < 100:
             header_text = (f"{'#':>3} {'Priority':>6} {bar_label} "
                            f"{'Sz':<3} {'Time':>7} {'User':<8} {'Job Name':<15}")
@@ -485,7 +469,7 @@ class ScreenViewQueue(u.WidgetWrap):
             st = getattr(job, 'start_time', {})
             if isinstance(st, dict) and st.get('set') and st.get('number', 0) > 0:
                 with_eta += 1
-        self._refresh_summary(pending_jobs, with_eta)
+        self._refresh_summary(pending_jobs, with_eta, enabled)
 
         if not pending_jobs:
             widgets.append(u.Text(("faded", "  No pending jobs in the queue")))
@@ -530,17 +514,20 @@ class ScreenViewQueue(u.WidgetWrap):
                 if group_size == 1:
                     sprio_row = sprio.get(group[0].job_id)
                     widgets.append(QueueJobWidget(
-                        group[0], rank, width=available_width, sprio_row=sprio_row,
+                        group[0], rank, width=available_width,
+                        sprio_row=sprio_row, enabled_components=enabled,
                     ))
                 elif group_key in self.expanded_groups:
                     for i, job in enumerate(group):
                         sprio_row = sprio.get(job.job_id)
                         widgets.append(QueueJobWidget(
-                            job, start_rank + i, width=available_width, sprio_row=sprio_row,
+                            job, start_rank + i, width=available_width,
+                            sprio_row=sprio_row, enabled_components=enabled,
                         ))
                 else:
                     widgets.append(QueueGroupWidget(
-                        start_rank, end_rank, group, width=available_width, sprio=sprio,
+                        start_rank, end_rank, group, width=available_width,
+                        sprio=sprio, enabled_components=enabled,
                     ))
 
                 rank += group_size
