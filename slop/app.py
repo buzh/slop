@@ -6,8 +6,10 @@ from slop.slurm import (
     SlurmJobFetcher,
     SlurmClusterFetcher,
     SlurmSdiagFetcher,
+    SprioFetcher,
     SreportFetcher,
     AdaptiveSacctFetcher,
+    fetch_priority_weights,
 )
 from slop.ui.widgets import Header, Footer, GenericOverlayText, HelpOverlay
 from slop.ui.views import ScreenViewReport
@@ -36,6 +38,8 @@ class SC(u.WidgetWrap):
         self.jobfetcher = SlurmJobFetcher(loop=self.asyncloop._loop, offline_data_dir=offline_data_dir)
         self.cluster_fetcher = SlurmClusterFetcher(loop=self.asyncloop._loop, offline_data_dir=offline_data_dir)
         self.sdiag_fetcher = SlurmSdiagFetcher(loop=self.asyncloop._loop, offline_data_dir=offline_data_dir)
+        self.sprio_fetcher = SprioFetcher(loop=self.asyncloop._loop, offline_data_dir=offline_data_dir)
+        self.priority_weights = fetch_priority_weights(offline_data_dir=offline_data_dir)
         self.sreport_fetcher = SreportFetcher(offline_data_dir=offline_data_dir)
         self.adaptive_sacct = AdaptiveSacctFetcher(offline_data_dir=offline_data_dir)
         self.jobs = Jobs(self.jobfetcher.fetch_sync())
@@ -110,11 +114,15 @@ class SC(u.WidgetWrap):
         self.refreshing = True
 
         try:
+            # Fetch all sources before announcing the refresh, so any view
+            # that re-renders on jobs_updated has fresh aux data (sprio, sdiag,
+            # cluster) available too.
             await self.jobfetcher.update_once()
             slurm_job_data = await self.jobfetcher.fetch()
-            self.jobs.update_slurmdata(slurm_job_data)
             await self.cluster_fetcher.fetch()
             await self.sdiag_fetcher.fetch()
+            await self.sprio_fetcher.fetch()
+            self.jobs.update_slurmdata(slurm_job_data)
 
             target = self.views.auto_refresh_target()
             if target is not None:

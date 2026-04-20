@@ -33,7 +33,7 @@ class ViewManager:
         self.partitions = ScreenViewPartitions(sc, sc.jobs)
         self.states = ScreenViewStates(sc, sc.jobs)
         self.cluster = ScreenViewCluster(sc, sc.cluster_fetcher)
-        self.queue = ScreenViewQueue(sc, sc.jobs)
+        self.queue = ScreenViewQueue(sc, sc.jobs, sc.sprio_fetcher, sc.priority_weights)
         self.scheduler = ScreenViewScheduler(sc, sc.sdiag_fetcher)
         self.report = None  # Created on demand
 
@@ -47,7 +47,7 @@ class ViewManager:
         by_id = {
             MY_JOBS: self.my_jobs, USERS: self.users, ACCOUNTS: self.accounts,
             PARTITIONS: self.partitions, STATES: self.states, CLUSTER: self.cluster,
-            SCHEDULER: self.scheduler,
+            QUEUE: self.queue, SCHEDULER: self.scheduler,
         }
         return by_id.get(self.current)
 

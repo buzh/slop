@@ -1,4 +1,8 @@
-"""Queue Status view - Shows pending jobs from the scheduler's perspective."""
+"""Queue Status view - Shows pending jobs from the scheduler's perspective.
+
+Each row carries a stacked priority-component bar built from sprio data, and
+the panel header summarizes pending counts plus the cluster's priority weights.
+"""
 
 import urwid as u
 import datetime
@@ -7,16 +11,87 @@ from slop.ui.constants import EMPTY_PLACEHOLDER
 from slop.ui.widgets import rounded_box
 
 
+# Component → (legend label, urwid attr). Order matters: it sets the visual
+# stacking order in the bar (left → right).
+PRIORITY_COMPONENTS = (
+    ('age',         'AGE',  'info'),
+    ('fairshare',   'FS',   'warning'),
+    ('qos_pri',     'QOS',  'success'),
+    ('jobsize',     'JS',   'state_failed'),
+    ('partition_pri','PART','state_pending'),
+    ('tres',        'TRES', 'normal'),
+    ('sitefactor',  'SITE', 'faded'),
+)
+
+# Map sprio component key → corresponding PriorityWeight* config key.
+WEIGHT_KEYS = {
+    'age':           'PriorityWeightAge',
+    'fairshare':     'PriorityWeightFairShare',
+    'qos_pri':       'PriorityWeightQOS',
+    'jobsize':       'PriorityWeightJobSize',
+    'partition_pri': 'PriorityWeightPartition',
+    'tres':          'PriorityWeightTRES',
+}
+
+
+def _build_priority_bar(components, bar_width):
+    """Return urwid markup for a stacked bar showing per-job component mix.
+
+    `components` is the per-job sprio dict. Bar is normalized to that job's
+    own priority total (so it answers "what makes up THIS job's priority").
+    Empty cells are filled with faded dashes.
+    """
+    if not components or bar_width <= 0:
+        return [('faded', '─' * bar_width)]
+
+    contributions = []
+    total = 0
+    for key, _label, attr in PRIORITY_COMPONENTS:
+        val = components.get(key, 0) or 0
+        if val > 0:
+            contributions.append((attr, val))
+            total += val
+
+    if total == 0:
+        return [('faded', '─' * bar_width)]
+
+    # Largest-remainder allocation so the bar always uses exactly bar_width chars.
+    raw = [(attr, val * bar_width / total) for attr, val in contributions]
+    floors = [(attr, int(r)) for attr, r in raw]
+    used = sum(n for _, n in floors)
+    remainder = bar_width - used
+    # Distribute leftover chars to fractions with the largest remainders.
+    order = sorted(range(len(raw)), key=lambda i: -(raw[i][1] - int(raw[i][1])))
+    extras = [0] * len(raw)
+    for i in order[:remainder]:
+        extras[i] = 1
+    segments = []
+    for (attr, n), extra in zip(floors, extras):
+        n += extra
+        if n > 0:
+            segments.append((attr, '█' * n))
+    return segments or [('faded', '─' * bar_width)]
+
+
+def _bar_width_for(layout_width):
+    """Width of the stacked component bar for a given layout width category."""
+    if layout_width < 100:
+        return 6
+    if layout_width < 140:
+        return 8
+    return 10
+
+
 class QueueJobWidget(u.WidgetWrap):
     """Widget for displaying a single pending job in the queue view."""
 
-    def __init__(self, job, rank, width=None):
+    def __init__(self, job, rank, width=None, sprio_row=None):
         self.job = job
         self.jobid = job.job_id
         self.rank = rank
         self.width = width or 120
+        self.sprio_row = sprio_row
 
-        # Build the widget
         widget = self._build_widget()
         super().__init__(widget)
 
@@ -27,20 +102,16 @@ class QueueJobWidget(u.WidgetWrap):
         return key
 
     def _build_widget(self):
-        """Build the job display widget."""
         job = self.job
 
-        # Priority
         priority = getattr(job, 'priority', {})
         if isinstance(priority, dict):
             priority_num = priority.get('number', 0)
         else:
             priority_num = priority if isinstance(priority, int) else 0
 
-        # Job size indicator (resource footprint)
         size_indicator = self._get_size_indicator()
 
-        # Time limit
         time_limit = getattr(job, 'time_limit', {})
         if isinstance(time_limit, dict) and time_limit.get('set'):
             duration_min = time_limit.get('number', 0)
@@ -48,11 +119,9 @@ class QueueJobWidget(u.WidgetWrap):
         else:
             duration_str = EMPTY_PLACEHOLDER
 
-        # Estimated start time
         start_time = getattr(job, 'start_time', {})
         eta_str = self._get_eta_string(start_time)
 
-        # Wait time
         submit_time = getattr(job, 'submit_time', {})
         if isinstance(submit_time, dict) and submit_time.get('set'):
             submit = datetime.datetime.fromtimestamp(submit_time['number'])
@@ -62,73 +131,64 @@ class QueueJobWidget(u.WidgetWrap):
         else:
             wait_str = EMPTY_PLACEHOLDER
 
-        # Reason
         reason = getattr(job, 'state_reason', EMPTY_PLACEHOLDER)
-
-        # Resource summary
         resource_str = self._get_resource_summary()
-
-        # QOS
         qos = getattr(job, 'qos', EMPTY_PLACEHOLDER)
-
-        # Username
         username = getattr(job, 'user_name', EMPTY_PLACEHOLDER)
 
-        # Format based on width
-        if self.width < 100:
-            # Narrow
-            line = f"{self.rank:>3} {priority_num:>7} {size_indicator:<3} {duration_str:>7} {username[:8]:<8} {job.name[:15]:<15}"
-        elif self.width < 140:
-            # Medium
-            line = f"{self.rank:>3} {priority_num:>7} {size_indicator:<3} {duration_str:>7} {eta_str[:14]:<14} {username[:10]:<10} {reason[:12]:<12} {job.name[:20]:<20}"
-        else:
-            # Wide
-            line = f"{self.rank:>3} {priority_num:>7} {size_indicator:<3} {duration_str:>7} {eta_str[:14]:<14} {wait_str[:11]:>11} {username[:10]:<10} {qos[:8]:<8} {reason[:15]:<15} {resource_str[:18]:<18} {job.name[:25]:<25}"
+        bar_width = _bar_width_for(self.width)
+        bar_segments = _build_priority_bar(self.sprio_row, bar_width)
 
-        # Color based on priority/reason
-        attr = self._get_color_attr(reason)
-        return u.AttrMap(u.Text(line), attr, 'normal_selected')
+        row_attr = self._get_color_attr(reason)
+
+        # Layout: rank(3) priority(6) bar(bar_width) [columns...]
+        prefix = [f"{self.rank:>3} {priority_num:>6} "]
+        bar = list(bar_segments)
+        if self.width < 100:
+            tail = f" {size_indicator:<3} {duration_str:>7} {username[:8]:<8} {job.name[:15]:<15}"
+        elif self.width < 140:
+            tail = (f" {size_indicator:<3} {duration_str:>7} {eta_str[:14]:<14} "
+                    f"{username[:10]:<10} {reason[:12]:<12} {job.name[:20]:<20}")
+        else:
+            tail = (f" {size_indicator:<3} {duration_str:>7} {eta_str[:14]:<14} "
+                    f"{wait_str[:11]:>11} {username[:10]:<10} {qos[:8]:<8} "
+                    f"{reason[:15]:<15} {resource_str[:18]:<18} {job.name[:25]:<25}")
+
+        markup = prefix + bar + [tail]
+        return u.AttrMap(u.Text(markup), row_attr, 'normal_selected')
 
     def _get_size_indicator(self):
         """Get visual size indicator based on resource footprint."""
         job = self.job
 
-        # Get node count
         node_count = getattr(job, 'node_count', {})
         if isinstance(node_count, dict):
             nodes = node_count.get('number', 1)
         else:
             nodes = node_count if isinstance(node_count, int) else 1
 
-        # Get CPU count
         cpus_obj = getattr(job, 'cpus', {})
         if isinstance(cpus_obj, dict):
             cpus = cpus_obj.get('number', 1)
         else:
             cpus = cpus_obj if isinstance(cpus_obj, int) else 1
 
-        # Get time limit (in minutes)
         time_limit = getattr(job, 'time_limit', {})
         if isinstance(time_limit, dict) and time_limit.get('set'):
             duration_min = time_limit.get('number', 60)
         else:
             duration_min = 60
 
-        # Calculate "resource-hours" footprint
-        # Small job: <100 core-hours
-        # Medium job: 100-1000 core-hours
-        # Large job: >1000 core-hours
         core_hours = (cpus * duration_min) / 60
 
         if core_hours < 100:
-            return "▪"  # Small - can backfill easily
+            return "▪"
         elif core_hours < 1000:
-            return "▪▪"  # Medium
+            return "▪▪"
         else:
-            return "▪▪▪"  # Large - needs reserved slot
+            return "▪▪▪"
 
     def _get_eta_string(self, start_time):
-        """Get estimated time to start as a human-readable string."""
         if not isinstance(start_time, dict) or not start_time.get('set'):
             return EMPTY_PLACEHOLDER
 
@@ -139,33 +199,27 @@ class QueueJobWidget(u.WidgetWrap):
         start_dt = datetime.datetime.fromtimestamp(start_timestamp)
         now = datetime.datetime.now()
 
-        # If in the past or very soon, say "now"
         diff_sec = (start_dt - now).total_seconds()
         if diff_sec < 60:
             return "now"
 
-        # Future time
         return f"in {format_duration(int(diff_sec))}"
 
     def _get_resource_summary(self):
-        """Get compact resource summary."""
         job = self.job
 
-        # Nodes
         node_count = getattr(job, 'node_count', {})
         if isinstance(node_count, dict):
             nodes = node_count.get('number', 0)
         else:
             nodes = node_count if isinstance(node_count, int) else 0
 
-        # CPUs
         cpus_obj = getattr(job, 'cpus', {})
         if isinstance(cpus_obj, dict):
             cpus = cpus_obj.get('number', 0)
         else:
             cpus = cpus_obj if isinstance(cpus_obj, int) else 0
 
-        # Memory (try memory_per_node first, then memory_per_cpu)
         mem_per_node = getattr(job, 'memory_per_node', {})
         mem_per_cpu = getattr(job, 'memory_per_cpu', {})
 
@@ -178,11 +232,9 @@ class QueueJobWidget(u.WidgetWrap):
         else:
             mem_str = None
 
-        # Check for GPUs in tres_req_str
         tres_str = getattr(job, 'tres_req_str', '')
         gpu_count = 0
         if 'gres/gpu=' in tres_str:
-            # Simple parsing - look for gres/gpu=N
             import re
             match = re.search(r'gres/gpu=(\d+)', tres_str)
             if match:
@@ -201,14 +253,10 @@ class QueueJobWidget(u.WidgetWrap):
         return " ".join(parts) if parts else EMPTY_PLACEHOLDER
 
     def _get_color_attr(self, reason):
-        """Get color attribute based on job reason."""
-        # Jobs that can backfill - normal
         if reason in ['Priority', 'Resources']:
             return 'normal'
-        # Jobs with dependencies or holds - warning
         elif reason in ['Dependency', 'JobHeldUser', 'JobHeldAdmin']:
             return 'warning'
-        # Jobs with issues - error
         elif 'NotAvail' in reason or 'Invalid' in reason:
             return 'error'
         else:
@@ -218,14 +266,14 @@ class QueueJobWidget(u.WidgetWrap):
 class QueueGroupWidget(u.WidgetWrap):
     """Widget for a collapsed group of jobs (same user + reason)."""
 
-    def __init__(self, start_rank, end_rank, job_group, width=None):
+    def __init__(self, start_rank, end_rank, job_group, width=None, sprio=None):
         self.start_rank = start_rank
         self.end_rank = end_rank
-        self.job_group = job_group  # List of jobs in this group
-        self.group_key = f"{start_rank}-{end_rank}"  # Unique key for tracking expansion
+        self.job_group = job_group
+        self.group_key = f"{start_rank}-{end_rank}"
         self.width = width or 120
+        self.sprio = sprio or {}
 
-        # Build the widget
         widget = self._build_widget()
         super().__init__(widget)
 
@@ -236,16 +284,12 @@ class QueueGroupWidget(u.WidgetWrap):
         return key
 
     def _build_widget(self):
-        """Build the group summary widget."""
-        # Get representative job (first in group)
         job = self.job_group[0]
         count = len(self.job_group)
 
-        # Get shared attributes
         username = getattr(job, 'user_name', EMPTY_PLACEHOLDER)
         reason = getattr(job, 'state_reason', EMPTY_PLACEHOLDER)
 
-        # Priority range
         priorities = []
         for j in self.job_group:
             priority = getattr(j, 'priority', {})
@@ -253,20 +297,14 @@ class QueueGroupWidget(u.WidgetWrap):
                 priorities.append(priority.get('number', 0))
             else:
                 priorities.append(priority if isinstance(priority, int) else 0)
+        priority_num = max(priorities) if priorities else 0
 
-        priority_min = min(priorities) if priorities else 0
-        priority_max = max(priorities) if priorities else 0
-        # Just show max priority to fit in column width
-        priority_num = priority_max
-
-        # Size indicator - use most common
         sizes = []
         for j in self.job_group:
             widget = QueueJobWidget(j, 0, width=self.width)
             sizes.append(widget._get_size_indicator())
         size_indicator = max(set(sizes), key=sizes.count) if sizes else "▪"
 
-        # Time range
         durations = []
         for j in self.job_group:
             time_limit = getattr(j, 'time_limit', {})
@@ -283,48 +321,65 @@ class QueueGroupWidget(u.WidgetWrap):
         else:
             duration_str = EMPTY_PLACEHOLDER
 
-        # Rank - show start rank in the column, add range info to name
         rank_num = self.start_rank
-
-        # Add range indicator to name if group spans multiple ranks
         if self.start_rank == self.end_rank:
             name_col = f"[{count} jobs]"
         else:
             name_col = f"[{count} jobs #{self.start_rank}-{self.end_rank}]"
 
-        # Format based on width - match individual job column widths exactly
-        ph = EMPTY_PLACEHOLDER
-        if self.width < 100:
-            # Rank(3) Priority(7) Sz(3) Time(7) User(8) Name(15)
-            line = f"{rank_num:>3} {priority_num:>7} {size_indicator:<3} {duration_str:>7} {username[:8]:<8} {name_col[:15]:<15}"
-        elif self.width < 140:
-            # Rank(3) Priority(7) Sz(3) Time(7) ETA(14) User(10) Reason(12) Name(20)
-            line = f"{rank_num:>3} {priority_num:>7} {size_indicator:<3} {duration_str:>7} {ph:<14} {username[:10]:<10} {reason[:12]:<12} {name_col[:20]:<20}"
-        else:
-            # Rank(3) Priority(7) Sz(3) Time(7) ETA(14) Wait(11) User(10) QOS(8) Reason(15) Resources(18) Name(25)
-            line = f"{rank_num:>3} {priority_num:>7} {size_indicator:<3} {duration_str:>7} {ph:<14} {ph:>11} {username[:10]:<10} {ph:<8} {reason[:15]:<15} {ph:<18} {name_col[:25]:<25}"
+        # Aggregate bar: average each component across the group so the bar
+        # represents the group as a whole.
+        aggregated = {}
+        sampled = 0
+        for j in self.job_group:
+            row = self.sprio.get(j.job_id)
+            if row:
+                sampled += 1
+                for key, _, _ in PRIORITY_COMPONENTS:
+                    aggregated[key] = aggregated.get(key, 0) + (row.get(key, 0) or 0)
+        if sampled:
+            for k in aggregated:
+                aggregated[k] //= max(sampled, 1)
+        bar_width = _bar_width_for(self.width)
+        bar = list(_build_priority_bar(aggregated if sampled else None, bar_width))
 
-        return u.AttrMap(u.Text(line), 'normal', 'normal_selected')
+        ph = EMPTY_PLACEHOLDER
+        prefix = [f"{rank_num:>3} {priority_num:>6} "]
+        if self.width < 100:
+            tail = f" {size_indicator:<3} {duration_str:>7} {username[:8]:<8} {name_col[:15]:<15}"
+        elif self.width < 140:
+            tail = (f" {size_indicator:<3} {duration_str:>7} {ph:<14} "
+                    f"{username[:10]:<10} {reason[:12]:<12} {name_col[:20]:<20}")
+        else:
+            tail = (f" {size_indicator:<3} {duration_str:>7} {ph:<14} "
+                    f"{ph:>11} {username[:10]:<10} {ph:<8} "
+                    f"{reason[:15]:<15} {ph:<18} {name_col[:25]:<25}")
+
+        markup = prefix + bar + [tail]
+        return u.AttrMap(u.Text(markup), 'normal', 'normal_selected')
 
 
 class ScreenViewQueue(u.WidgetWrap):
     """Queue status view - shows pending jobs from scheduler's perspective."""
 
-    def __init__(self, main_screen, jobs):
+    def __init__(self, main_screen, jobs, sprio_fetcher=None, priority_weights=None):
         self.main_screen = main_screen
         self.jobs = jobs
+        self.sprio_fetcher = sprio_fetcher
+        self.priority_weights = priority_weights or {}
 
-        # Group expansion tracking
-        self.expanded_groups = set()  # Set of group_keys that are expanded
+        self.expanded_groups = set()
 
-        # Build UI - separate header from scrollable content
-        self.header_text = u.AttrMap(u.Text(""), 'jobheader')
+        # Two-line summary block above the column header.
+        self.summary_text = u.Text("")
+        self.col_header_text = u.AttrMap(u.Text(""), 'jobheader')
         self.job_walker = u.SimpleFocusListWalker([])
         self.job_listbox = u.ListBox(self.job_walker)
 
-        # Pile: header + divider + scrollable list (with scrollbar only on listbox)
         pile = u.Pile([
-            ('pack', self.header_text),
+            ('pack', self.summary_text),
+            ('pack', u.Divider("─")),
+            ('pack', self.col_header_text),
             ('pack', u.Divider("─")),
             u.ScrollBar(self.job_listbox)
         ])
@@ -336,7 +391,6 @@ class ScreenViewQueue(u.WidgetWrap):
         u.connect_signal(self.jobs, 'jobs_updated', self.on_jobs_update)
         u.WidgetWrap.__init__(self, body)
 
-        # Initial update
         self.update()
 
     def on_jobs_update(self, *_args, **_kwargs):
@@ -347,40 +401,95 @@ class ScreenViewQueue(u.WidgetWrap):
         return self.main_screen.frame.body.base_widget is self
 
     def on_resize(self):
-        """Handle terminal resize events."""
         self.update()
 
+    def _sprio_data(self):
+        return self.sprio_fetcher.fetch_sync() if self.sprio_fetcher else {}
+
+    def _summary_markup(self, pending_jobs, with_eta, sprio_count):
+        """Top summary line + priority-weight legend line."""
+        weights = self.priority_weights
+        total = len(pending_jobs)
+
+        line1 = [
+            ('jobheader', '  '),
+            ('jobheader', f'Pending: {total}'),
+            '   ',
+            f'with ETA: {with_eta}',
+            '   ',
+            f'sprio rows: {sprio_count}',
+        ]
+        if not weights:
+            return [line1, ['']]
+
+        # Legend: only show components with non-zero weight.
+        legend = ['  Weights/legend:  ']
+        has_any = False
+        for key, label, attr in PRIORITY_COMPONENTS:
+            wkey = WEIGHT_KEYS.get(key)
+            if not wkey:
+                continue
+            w = weights.get(wkey, 0) or 0
+            if w <= 0:
+                continue
+            has_any = True
+            legend.append((attr, '█'))
+            legend.append(f' {label}:{w}  ')
+        if not has_any:
+            legend.append(('faded', '(no PriorityWeight* configured)'))
+        return [line1, legend]
+
+    def _refresh_summary(self, pending_jobs, with_eta):
+        sprio = self._sprio_data()
+        sprio_count = sum(1 for j in pending_jobs if j.job_id in sprio)
+        line1, line2 = self._summary_markup(pending_jobs, with_eta, sprio_count)
+        # Combine into one Text with newline; urwid handles multi-line markup.
+        markup = list(line1) + ['\n'] + list(line2)
+        self.summary_text.set_text(markup)
+
     def update(self):
-        """Update the queue display."""
         self.job_walker.clear()
         widgets = []
 
-        # Get available width
         available_width = self.main_screen.width - 3 if hasattr(self.main_screen, 'width') else 120
+        bar_width = _bar_width_for(available_width)
+        sprio = self._sprio_data()
 
-        # Update title
         self.container.set_title("Queue Status - Pending Jobs by Priority (grouped by user)")
 
-        # Update header (separate from scrollable content)
+        # Column header — bar slot is labeled "PriMix" (compact label that
+        # fits in the narrow 6-char layout). Legend above explains the colors.
+        bar_label = "PriMix".center(bar_width)[:bar_width]
         if available_width < 100:
-            header_text = f"{'#':>3} {'Priority':>7} {'Sz':<3} {'Time':>7} {'User':<8} {'Job Name':<15}"
+            header_text = (f"{'#':>3} {'Priority':>6} {bar_label} "
+                           f"{'Sz':<3} {'Time':>7} {'User':<8} {'Job Name':<15}")
         elif available_width < 140:
-            header_text = f"{'#':>3} {'Priority':>7} {'Sz':<3} {'Time':>7} {'ETA':<14} {'User':<10} {'Reason':<12} {'Job Name':<20}"
+            header_text = (f"{'#':>3} {'Priority':>6} {bar_label} "
+                           f"{'Sz':<3} {'Time':>7} {'ETA':<14} "
+                           f"{'User':<10} {'Reason':<12} {'Job Name':<20}")
         else:
-            header_text = f"{'#':>3} {'Priority':>7} {'Sz':<3} {'Time':>7} {'ETA':<14} {'Waiting':>11} {'User':<10} {'QOS':<8} {'Reason':<15} {'Resources':<18} {'Job Name':<25}"
+            header_text = (f"{'#':>3} {'Priority':>6} {bar_label} "
+                           f"{'Sz':<3} {'Time':>7} {'ETA':<14} {'Waiting':>11} "
+                           f"{'User':<10} {'QOS':<8} {'Reason':<15} "
+                           f"{'Resources':<18} {'Job Name':<25}")
+        self.col_header_text.original_widget.set_text(header_text)
 
-        self.header_text.original_widget.set_text(header_text)
-
-        # Get all pending jobs
         pending_jobs = []
         for job in self.jobs.jobs:
             if hasattr(job, 'job_state') and 'PENDING' in job.job_state:
                 pending_jobs.append(job)
 
+        # Count jobs with a usable ETA for the summary.
+        with_eta = 0
+        for job in pending_jobs:
+            st = getattr(job, 'start_time', {})
+            if isinstance(st, dict) and st.get('set') and st.get('number', 0) > 0:
+                with_eta += 1
+        self._refresh_summary(pending_jobs, with_eta)
+
         if not pending_jobs:
             widgets.append(u.Text(("faded", "  No pending jobs in the queue")))
         else:
-            # Sort by priority (descending - highest priority first)
             def get_priority(job):
                 priority = getattr(job, 'priority', {})
                 if isinstance(priority, dict):
@@ -400,21 +509,17 @@ class ScreenViewQueue(u.WidgetWrap):
                 reason = getattr(job, 'state_reason', EMPTY_PLACEHOLDER)
 
                 if user == current_user and reason == current_reason:
-                    # Same group - add to current
                     current_group.append(job)
                 else:
-                    # Different group - save current and start new
                     if current_group:
                         groups.append(current_group)
                     current_group = [job]
                     current_user = user
                     current_reason = reason
 
-            # Don't forget the last group
             if current_group:
                 groups.append(current_group)
 
-            # Create widgets from groups
             rank = 1
             for group in groups:
                 group_size = len(group)
@@ -423,21 +528,25 @@ class ScreenViewQueue(u.WidgetWrap):
                 group_key = f"{start_rank}-{end_rank}"
 
                 if group_size == 1:
-                    # Single job - always show individually
-                    widgets.append(QueueJobWidget(group[0], rank, width=available_width))
+                    sprio_row = sprio.get(group[0].job_id)
+                    widgets.append(QueueJobWidget(
+                        group[0], rank, width=available_width, sprio_row=sprio_row,
+                    ))
                 elif group_key in self.expanded_groups:
-                    # Expanded group - show all jobs individually
                     for i, job in enumerate(group):
-                        widgets.append(QueueJobWidget(job, start_rank + i, width=available_width))
+                        sprio_row = sprio.get(job.job_id)
+                        widgets.append(QueueJobWidget(
+                            job, start_rank + i, width=available_width, sprio_row=sprio_row,
+                        ))
                 else:
-                    # Collapsed group - show summary
-                    widgets.append(QueueGroupWidget(start_rank, end_rank, group, width=available_width))
+                    widgets.append(QueueGroupWidget(
+                        start_rank, end_rank, group, width=available_width, sprio=sprio,
+                    ))
 
                 rank += group_size
 
         self.job_walker.extend(widgets)
 
-        # Set focus on first job, or first group if no individual jobs visible
         if len(self.job_walker) > 0:
             first_job_idx = None
             first_group_idx = None
@@ -449,7 +558,6 @@ class ScreenViewQueue(u.WidgetWrap):
                 elif hasattr(widget, 'group_key') and first_group_idx is None:
                     first_group_idx = i
 
-            # Prefer individual job, fall back to group
             if first_job_idx is not None:
                 self.job_walker.set_focus(first_job_idx)
             elif first_group_idx is not None:
@@ -461,10 +569,8 @@ class ScreenViewQueue(u.WidgetWrap):
 
         focus_w, _ = self.job_listbox.get_focus()
 
-        # 'e' or Enter/Space to toggle expand/collapse group
         if key in ('e', 'enter', ' '):
             if hasattr(focus_w, 'group_key'):
-                # Focused on a group - toggle expansion
                 group_key = focus_w.group_key
                 if group_key in self.expanded_groups:
                     self.expanded_groups.remove(group_key)
@@ -473,7 +579,6 @@ class ScreenViewQueue(u.WidgetWrap):
                 self.update()
                 return None
             elif hasattr(focus_w, 'jobid') and key in ('enter', ' '):
-                # Focused on individual job - show details
                 from slop.ui.overlays import JobInfoOverlay
                 job = self.jobs.job_index.get(focus_w.jobid)
                 if job:
