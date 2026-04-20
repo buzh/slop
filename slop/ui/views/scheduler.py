@@ -1,6 +1,13 @@
-"""Scheduler health view (F8) — slurmctld diagnostics from `sdiag --json`."""
+"""Scheduler health view (F8) — slurmctld diagnostics + partition-grouped pending queue.
+
+Top half: backfill / main scheduler stats and slowest hot RPCs from sdiag.
+Bottom half: PendingListWidget (the partition-grouped pending list that used
+to sit at the bottom of F7). The two halves refresh independently — sdiag on
+its 30s timer, the pending list on every jobs_updated signal.
+"""
 import urwid as u
 from slop.ui.widgets import SectionHeader, rounded_box
+from slop.ui.views.pending_list import PendingListWidget
 
 
 def _num(d):
@@ -32,12 +39,25 @@ def _fmt_int(n):
 class ScreenViewScheduler(u.WidgetWrap):
     """Scheduler health view — backfill stats, queue summary, RPC pressure."""
 
+    # Vertical split between scheduler stats (top) and pending-queue (bottom).
+    # The user dropped RPC pressure to free up room for the pending list, so
+    # the pending list gets the larger share.
+    SECTION_WEIGHTS = (40, 60)
+
     def __init__(self, main_screen, sdiag_fetcher):
         self.main_screen = main_screen
         self.sdiag_fetcher = sdiag_fetcher
         self.walker = u.SimpleFocusListWalker([])
         self.listbox = u.ListBox(self.walker)
-        widget = rounded_box(u.ScrollBar(self.listbox), title='Scheduler Health')
+
+        self.pending_list = PendingListWidget(main_screen, main_screen.jobs)
+
+        outer = u.Pile([
+            ('weight', self.SECTION_WEIGHTS[0], u.ScrollBar(self.listbox)),
+            ('weight', self.SECTION_WEIGHTS[1], self.pending_list),
+        ], focus_item=1)
+
+        widget = rounded_box(outer, title='Scheduler Health & Pending Queue')
         u.WidgetWrap.__init__(self, widget)
         self.update()
 
@@ -76,20 +96,6 @@ class ScreenViewScheduler(u.WidgetWrap):
             markup.append((attr, f'{k}'))
             markup.append(('faded', f'={v}'))
         return u.Text(markup, wrap='clip')
-
-    def _rpc_user_row(self, name, count, avg_us, pct, total_pct_bar_w=20):
-        col = 'error' if pct > 25 else 'warning' if pct > 10 else 'normal'
-        filled = int(round(pct / 100 * total_pct_bar_w))
-        bar = '█' * filled + '░' * (total_pct_bar_w - filled)
-        return u.Text([
-            '    ',
-            f'{name:<18} ',
-            f'{_fmt_int(count):>10}  ',
-            f'{_fmt_us(avg_us):>8}  ',
-            (col, f'{pct:4.1f}%'),
-            ' ',
-            ('faded', bar),
-        ], wrap='clip')
 
     def _rpc_msg_row(self, msg_type, count, avg_us):
         col = 'error' if avg_us > 10000 else 'warning' if avg_us > 1000 else 'normal'
@@ -190,21 +196,6 @@ class ScreenViewScheduler(u.WidgetWrap):
             markup.append(('faded', f' {label:<10}'))
         widgets.append(u.Text(markup, wrap='clip'))
         widgets.append(u.Divider())
-
-        # --- RPC pressure: top users ----------------------------------
-        users = sorted(s.get('rpcs_by_user', []), key=lambda r: -r.get('count', 0))[:8]
-        total_calls = sum(r.get('count', 0) for r in s.get('rpcs_by_user', []))
-        if users:
-            widgets.append(SectionHeader('RPC PRESSURE (top callers since boot)'))
-            widgets.append(u.Text([
-                '    ', ('faded', f'{"user":<18} {"count":>10}  {"avg":>8}  share'),
-            ], wrap='clip'))
-            for r in users:
-                pct = 100 * r.get('count', 0) / total_calls if total_calls else 0
-                widgets.append(self._rpc_user_row(
-                    r.get('user', '?'), r.get('count', 0),
-                    _num(r.get('average_time')), pct))
-            widgets.append(u.Divider())
 
         # --- Slowest hot RPCs -----------------------------------------
         rpcs = [r for r in s.get('rpcs_by_message_type', []) if r.get('count', 0) > 10000]

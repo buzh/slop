@@ -1,18 +1,21 @@
-"""Queue Status view - the lifecycle "flow" of jobs.
+"""Queue Status view (F7) - the lifecycle "flow" of jobs.
 
-Four sections, top to bottom, mirroring the upward flow of a job through its
-states:
+Four sections, top to bottom, mirroring the upward flow of a job:
 
   1. Just ended       (jobs that vanished from scontrol since the last refresh)
   2. Finishing soon   (running jobs ranked by least time-remaining)
   3. Just started     (jobs that flipped PENDING → RUNNING in the last 15 min)
-  4. Pending queue    (existing partition-grouped pending list)
+  4. About to start   (cluster-wide pending jobs sorted by ETA)
 
 Sections 1 and 3 are tracker-driven: entries arrive on a state transition and
 linger until either an age cap (15 min for "started") or display capacity
 forces eviction (FIFO). Section 2 is recomputed each refresh and excludes
 anything currently in the "started" tracker — a job is never both "just
-started" and "finishing soon".
+started" and "finishing soon". Section 4 is recomputed each refresh from the
+current pending set and uses Slurm's start_time estimate to order jobs.
+
+The partition-grouped pending list that used to sit in section 4 now lives in
+the Scheduler view (F8); F7 is exclusively the "what's about to change" view.
 """
 
 import urwid as u
@@ -60,16 +63,22 @@ def _ts(time_dict):
     return 0
 
 
-def _format_eta(start_time):
+def _eta_seconds(start_time):
+    """Return seconds-from-now of the ETA (negative = overdue), or None if no usable ETA."""
     if not isinstance(start_time, dict) or not start_time.get('set'):
-        return EMPTY_PLACEHOLDER
+        return None
     ts = start_time.get('number', 0)
-    if ts == 0:
-        return EMPTY_PLACEHOLDER
+    if ts <= 0:
+        return None
     diff = ts - datetime.datetime.now().timestamp()
-    # Slurm uses far-future placeholder dates (~year 2106) when it has no
-    # estimate; treat anything > 1y out as "Unknown" rather than a useful ETA.
+    # Slurm uses a far-future placeholder (~year 2106) when it has no estimate.
     if diff > 365 * 24 * 3600:
+        return None
+    return diff
+
+
+def _format_eta_seconds(diff):
+    if diff is None:
         return "Unknown"
     if diff < -60:
         return "overdue"
@@ -107,17 +116,6 @@ def _time_limit_str(job):
     if isinstance(tl, dict) and tl.get('set'):
         return _coarse_duration(tl.get('number', 0) * 60)
     return EMPTY_PLACEHOLDER
-
-
-def _has_eta(job):
-    st = getattr(job, 'start_time', {})
-    if not (isinstance(st, dict) and st.get('set')):
-        return False
-    ts = st.get('number', 0)
-    if ts <= 0:
-        return False
-    diff = ts - datetime.datetime.now().timestamp()
-    return diff <= 365 * 24 * 3600
 
 
 def _reason_attr(reason):
@@ -201,29 +199,7 @@ def _snapshot_job(job):
     }
 
 
-# ----- Pending-section formatters (existing, unchanged) -------------------
-
-def _format_row(width, *, rank, priority, eta, wait, reason, user, size, tlim, name):
-    if width < 100:
-        return f"{rank:>3} {priority:>7} {eta:<11} {reason:<14} {user:<10} {name:<20}"
-    if width < 140:
-        return (f"{rank:>3} {priority:>7} {eta:<11} {wait:>8} "
-                f"{reason:<15} {user:<10} {size:<3} {tlim:>11} {name:<25}")
-    return (f"{rank:>3} {priority:>7} {eta:<13} {wait:>8} "
-            f"{reason:<18} {user:<10} {size:<3} {tlim:>11} {name:<40}")
-
-
-def _format_header(width):
-    return _format_row(
-        width, rank='#', priority='Priority', eta='Starts',
-        wait='Waiting', reason='Reason', user='User',
-        size='Sz', tlim='Time', name='Job Name',
-    )
-
-
 # ----- Lifecycle row formatters -------------------------------------------
-# Each section has its own column set; sharing a single _format_row across
-# sections would force every column into every section even when irrelevant.
 
 def _format_ended_row(width, *, state, jobid, user, partition,
                       used, limit, exit_code, name):
@@ -270,134 +246,23 @@ def _started_header(width):
     )
 
 
+def _format_about_row(width, *, eta, jobid, user, partition, priority,
+                      reason, size, tlim, wait, name):
+    if width < 100:
+        return f"{eta:<13} {jobid:>9} {user:<10} {partition:<12} {reason:<14} {name:<20}"
+    return (f"{eta:<14} {jobid:>9} {user:<12} {partition:<14} "
+            f"{priority:>8} {reason:<16} {size:<3} {tlim:>10} {wait:>9}  {name:<30}")
+
+
+def _about_header(width):
+    return _format_about_row(
+        width, eta='ETA', jobid='Job ID', user='User', partition='Partition',
+        priority='Priority', reason='Reason', size='Sz', tlim='Time',
+        wait='Waited', name='Name',
+    )
+
+
 # ----- Widgets ------------------------------------------------------------
-
-class QueueJobWidget(u.WidgetWrap):
-    """One pending job row. `parent_group_key` is set when this row is an
-    expanded child of a QueueGroupWidget so 'e' from the child can still
-    collapse the parent group."""
-
-    def __init__(self, job, rank, width=120, parent_group_key=None):
-        self.job = job
-        self.jobid = job.job_id
-        self.rank = rank
-        self.width = width
-        self.parent_group_key = parent_group_key
-        super().__init__(self._build())
-
-    def selectable(self):
-        return True
-
-    def keypress(self, size, key):
-        return key
-
-    def _build(self):
-        job = self.job
-        priority = _job_priority(job)
-        eta = _format_eta(getattr(job, 'start_time', {}))
-        wait = _format_wait(getattr(job, 'submit_time', {}))
-        reason = getattr(job, 'state_reason', EMPTY_PLACEHOLDER) or EMPTY_PLACEHOLDER
-        user = getattr(job, 'user_name', EMPTY_PLACEHOLDER)
-        size = _size_indicator(job)
-        tlim = _time_limit_str(job)
-        name = job.name or EMPTY_PLACEHOLDER
-
-        text = _format_row(
-            self.width, rank=str(self.rank), priority=str(priority),
-            eta=eta[:13], wait=wait[:8], reason=reason[:18],
-            user=user[:10], size=size, tlim=tlim[:11], name=name[:40],
-        )
-        return u.AttrMap(u.Text(text), _reason_attr(reason), 'normal_selected')
-
-
-class QueueGroupWidget(u.WidgetWrap):
-    """Header row for a bundle of consecutive same-(user, reason) jobs.
-    Stays visible whether the group is expanded or collapsed; the marker
-    (▶/▼) shows the current state."""
-
-    def __init__(self, group_key, start_rank, end_rank, group, width=120,
-                 expanded=False):
-        self.group_key = group_key
-        self.start_rank = start_rank
-        self.end_rank = end_rank
-        self.job_group = group
-        self.width = width
-        self.expanded = expanded
-        super().__init__(self._build())
-
-    def selectable(self):
-        return True
-
-    def keypress(self, size, key):
-        return key
-
-    def _build(self):
-        count = len(self.job_group)
-        rng = (f"#{self.start_rank}" if self.start_rank == self.end_rank
-               else f"#{self.start_rank}-{self.end_rank}")
-
-        if self.expanded:
-            # Compact subheader — the children below carry per-row detail, so
-            # repeating priority/user/eta on the header would just be noise.
-            line = f"  ▼ [{count} jobs {rng}]".ljust(max(self.width, 1))
-            return u.AttrMap(u.Text(line), 'faded', 'normal_selected')
-
-        first = self.job_group[0]
-        priority = max(_job_priority(j) for j in self.job_group)
-        eta = _format_eta(getattr(first, 'start_time', {}))
-        wait = _format_wait(getattr(first, 'submit_time', {}))
-        reason = getattr(first, 'state_reason', EMPTY_PLACEHOLDER) or EMPTY_PLACEHOLDER
-        user = getattr(first, 'user_name', EMPTY_PLACEHOLDER)
-
-        sizes = [_size_indicator(j) for j in self.job_group]
-        size = max(set(sizes), key=sizes.count)
-
-        durations = []
-        for j in self.job_group:
-            tl = getattr(j, 'time_limit', {})
-            if isinstance(tl, dict) and tl.get('set'):
-                durations.append(tl.get('number', 0))
-        if durations:
-            mn, mx = min(durations), max(durations)
-            tlim = (_coarse_duration(mn * 60) if mn == mx
-                    else f"{_coarse_duration(mn * 60)}-{_coarse_duration(mx * 60)}")
-        else:
-            tlim = EMPTY_PLACEHOLDER
-
-        name = f"▶ [{count} jobs {rng}]"
-        text = _format_row(
-            self.width, rank=str(self.start_rank), priority=str(priority),
-            eta=eta[:13], wait=wait[:8], reason=reason[:18],
-            user=user[:10], size=size, tlim=tlim[:11], name=name[:40],
-        )
-        return u.AttrMap(u.Text(text), _reason_attr(reason), 'normal_selected')
-
-
-class PartitionHeaderWidget(u.WidgetWrap):
-    """Non-selectable section header: partition name + pending counts."""
-
-    def __init__(self, partition, total, with_eta, width=120):
-        title = f"  {partition}  ({total} pending"
-        if with_eta:
-            title += f", {with_eta} with ETA"
-        title += ")"
-        line = title.ljust(max(width, len(title)))
-        super().__init__(u.AttrMap(u.Text(line), 'jobheader'))
-
-    def selectable(self):
-        return False
-
-
-class SectionTitleWidget(u.WidgetWrap):
-    """Banner row for a top-of-screen lifecycle section."""
-
-    def __init__(self, label, count, width=120):
-        text = f"  {label}  ({count})".ljust(max(width, 1))
-        super().__init__(u.AttrMap(u.Text(text), 'jobheader'))
-
-    def selectable(self):
-        return False
-
 
 class _ReadOnlyRow(u.WidgetWrap):
     """Base for non-interactive rows in the upper sections."""
@@ -448,7 +313,7 @@ class FinishingJobWidget(_ReadOnlyRow):
             ran=ran[:11],
             name=str(getattr(job, 'name', EMPTY_PLACEHOLDER) or EMPTY_PLACEHOLDER)[:40],
         )
-        # Dim warning if <5 min remaining, else faded normal
+        # Warning attr if <5 min remaining, else normal.
         attr = 'warning' if (end_ts and end_ts - now < 300) else 'normal'
         super().__init__(u.AttrMap(u.Text(text), attr))
 
@@ -477,12 +342,68 @@ class StartedJobWidget(_ReadOnlyRow):
         super().__init__(u.AttrMap(u.Text(text), _state_attr(snap['state'])))
 
 
+class AboutToStartJobWidget(u.WidgetWrap):
+    """Selectable row for a pending job in the bottom (about-to-start) section.
+    Cluster-wide, sorted by ETA, partition column visible."""
+
+    def __init__(self, job, width=120):
+        self.job = job
+        self.jobid = job.job_id
+        self.width = width
+        super().__init__(self._build())
+
+    def selectable(self):
+        return True
+
+    def keypress(self, size, key):
+        return key
+
+    def _build(self):
+        job = self.job
+        diff = _eta_seconds(getattr(job, 'start_time', {}))
+        eta = _format_eta_seconds(diff)
+        priority = _job_priority(job)
+        reason = getattr(job, 'state_reason', EMPTY_PLACEHOLDER) or EMPTY_PLACEHOLDER
+        user = getattr(job, 'user_name', EMPTY_PLACEHOLDER)
+        partition = _job_partition(job)
+        size = _size_indicator(job)
+        tlim = _time_limit_str(job)
+        wait = _format_wait(getattr(job, 'submit_time', {}))
+        name = job.name or EMPTY_PLACEHOLDER
+
+        text = _format_about_row(
+            self.width,
+            eta=eta[:14], jobid=str(job.job_id)[:9],
+            user=user[:12], partition=partition[:14],
+            priority=str(priority)[:8], reason=reason[:16],
+            size=size, tlim=tlim[:10], wait=wait[:9], name=name[:30],
+        )
+        # Soonest jobs (within 5 min or already overdue) get the success attr
+        # so they pop visually; everything else stays neutral.
+        if diff is not None and diff < 300:
+            attr = 'success'
+        else:
+            attr = _reason_attr(reason)
+        return u.AttrMap(u.Text(text), attr, 'normal_selected')
+
+
+class SectionTitleWidget(u.WidgetWrap):
+    """Banner row for a top-of-screen lifecycle section."""
+
+    def __init__(self, label, count, width=120):
+        text = f"  {label}  ({count})".ljust(max(width, 1))
+        super().__init__(u.AttrMap(u.Text(text), 'jobheader'))
+
+    def selectable(self):
+        return False
+
+
 # ----- Screen -------------------------------------------------------------
 
 class ScreenViewQueue(u.WidgetWrap):
-    """Lifecycle flow: ended → finishing soon → just started → pending."""
+    """Lifecycle flow: ended → finishing soon → just started → about to start."""
 
-    # Vertical weights for the four sections (ended, finishing, started, pending).
+    # Vertical weights for the four sections (ended, finishing, started, about).
     SECTION_WEIGHTS = (15, 15, 15, 55)
     # Per-section overhead (title row + column-header row).
     TRACKER_OVERHEAD = 2
@@ -490,11 +411,6 @@ class ScreenViewQueue(u.WidgetWrap):
     def __init__(self, main_screen, jobs):
         self.main_screen = main_screen
         self.jobs = jobs
-
-        # Pending-section state (existing).
-        self.expanded_groups = set()
-        self.selected_jobid = None
-        self.selected_group_key = None
 
         # Lifecycle trackers.
         # started_tracker: {jobid: (snap, monotonic_ts_when_first_seen)}
@@ -506,6 +422,9 @@ class ScreenViewQueue(u.WidgetWrap):
         self.ended_tracker = {}
         self.prev_jobs_by_id = {}
 
+        # Bottom section: cluster-wide pending jobs sorted by ETA.
+        self.selected_jobid = None
+
         # Top three sections: re-built each render. Wrap each in a Filler so
         # the outer Pile can give them a weighted height (Pile-of-packs is a
         # flow widget; weight needs box).
@@ -513,17 +432,18 @@ class ScreenViewQueue(u.WidgetWrap):
         self.finishing_section = u.Pile([u.Text("")])
         self.started_section = u.Pile([u.Text("")])
 
-        # Bottom section: existing pending queue with internal ListBox scroll.
-        self.summary_text = u.Text("")
-        self.col_header_text = u.AttrMap(u.Text(""), 'jobheader')
-        self.job_walker = u.SimpleFocusListWalker([])
-        self.job_listbox = u.ListBox(self.job_walker)
-        pending_section = u.Pile([
-            ('pack', self.summary_text),
+        # Bottom section uses a ListBox so the user can scroll past whatever
+        # fits in the allotted height.
+        self.about_summary = u.Text("")
+        self.about_col_header = u.AttrMap(u.Text(""), 'jobheader')
+        self.about_walker = u.SimpleFocusListWalker([])
+        self.about_listbox = u.ListBox(self.about_walker)
+        about_section = u.Pile([
+            ('pack', self.about_summary),
             ('pack', u.Divider("─")),
-            ('pack', self.col_header_text),
+            ('pack', self.about_col_header),
             ('pack', u.Divider("─")),
-            u.ScrollBar(self.job_listbox),
+            u.ScrollBar(self.about_listbox),
         ])
 
         outer = u.Pile([
@@ -533,7 +453,7 @@ class ScreenViewQueue(u.WidgetWrap):
              u.Filler(self.finishing_section, valign='top')),
             ('weight', self.SECTION_WEIGHTS[2],
              u.Filler(self.started_section, valign='top')),
-            ('weight', self.SECTION_WEIGHTS[3], pending_section),
+            ('weight', self.SECTION_WEIGHTS[3], about_section),
         ], focus_item=3)
         self.outer_pile = outer
 
@@ -571,12 +491,7 @@ class ScreenViewQueue(u.WidgetWrap):
     # --- Tracker bookkeeping -----------------------------------------------
 
     def _section_capacities(self):
-        """Approximate row-count budget for each tracker section.
-
-        Derived from the terminal height: the outer Pile splits its area by
-        the configured weights, then each tracker section spends 2 rows on
-        its title + column header.
-        """
+        """Approximate row-count budget for each tracker section."""
         total = max(0, getattr(self.main_screen, 'height', 30) - 2)
         weight_total = sum(self.SECTION_WEIGHTS)
         ended_h = int(total * self.SECTION_WEIGHTS[0] / weight_total)
@@ -589,8 +504,6 @@ class ScreenViewQueue(u.WidgetWrap):
         )
 
     def _update_trackers(self):
-        """Detect transitions and prune trackers; recomputed sections (like
-        finishing-soon) happen inside _render."""
         now_mono = time.monotonic()
         current_jobs = list(self.jobs.jobs)
         current_by_id = {j.job_id: j for j in current_jobs}
@@ -598,7 +511,7 @@ class ScreenViewQueue(u.WidgetWrap):
         # 1) Pending → Running: a job that was PENDING last tick is now RUNNING.
         for jid, j in current_by_id.items():
             if jid in self.started_tracker:
-                continue  # already tracked
+                continue
             prev = self.prev_jobs_by_id.get(jid)
             if prev is None:
                 continue  # never seen — don't count pre-existing jobs as "just started"
@@ -633,12 +546,10 @@ class ScreenViewQueue(u.WidgetWrap):
 
     @staticmethod
     def _cap_dict(tracker, cap):
-        """Trim a tracker dict to `cap` newest entries (drop oldest)."""
         if cap <= 0:
             return {}
         if len(tracker) <= cap:
             return tracker
-        # Newest = highest monotonic timestamp; keep the last `cap` of those.
         sorted_items = sorted(tracker.items(), key=lambda kv: kv[1][1])
         return dict(sorted_items[-cap:])
 
@@ -654,13 +565,12 @@ class ScreenViewQueue(u.WidgetWrap):
         self._render_ended_section(width, ended_cap)
         self._render_finishing_section(width, finish_cap)
         self._render_started_section(width, started_cap)
-        self._render_pending_section(width)
+        self._render_about_section(width)
 
     def _set_section_contents(self, section_pile, widgets):
         section_pile.contents = [(w, ('pack', None)) for w in widgets]
 
     def _render_ended_section(self, width, cap):
-        # Newest first.
         items = sorted(self.ended_tracker.values(), key=lambda v: v[1], reverse=True)
         title = SectionTitleWidget("Just ended", len(items), width=width)
         col_header = u.AttrMap(u.Text(_ended_header(width)), 'faded')
@@ -673,8 +583,6 @@ class ScreenViewQueue(u.WidgetWrap):
         self._set_section_contents(self.ended_section, body)
 
     def _render_finishing_section(self, width, cap):
-        # All currently-RUNNING jobs (excluding ones in started_tracker),
-        # sorted by least time remaining.
         now = time.time()
         candidates = []
         for j in self.jobs.jobs:
@@ -713,152 +621,81 @@ class ScreenViewQueue(u.WidgetWrap):
                 body.append(StartedJobWidget(snap, width=width))
         self._set_section_contents(self.started_section, body)
 
-    def _render_pending_section(self, width):
-        self.job_walker.clear()
-        self.col_header_text.original_widget.set_text(_format_header(width))
+    def _render_about_section(self, width):
+        """Cross-partition pending jobs sorted by ETA (soonest first)."""
+        self.about_walker.clear()
+        self.about_col_header.original_widget.set_text(_about_header(width))
 
-        # Bucket pending jobs by their first listed partition.
-        by_part = {}
+        pending_with_eta = []
+        pending_without = []
         for job in self.jobs.jobs:
-            if not (hasattr(job, 'job_state') and 'PENDING' in job.job_state):
+            if 'PENDING' not in (getattr(job, 'job_state', None) or []):
                 continue
-            by_part.setdefault(_job_partition(job), []).append(job)
+            diff = _eta_seconds(getattr(job, 'start_time', {}))
+            if diff is None:
+                pending_without.append(job)
+            else:
+                pending_with_eta.append((diff, job))
+        pending_with_eta.sort(key=lambda x: x[0])
 
-        total_pending = sum(len(v) for v in by_part.values())
-        total_eta = sum(1 for jobs in by_part.values() for j in jobs if _has_eta(j))
-        self.summary_text.set_text([
+        total_pending = len(pending_with_eta) + len(pending_without)
+        soonest = ''
+        if pending_with_eta:
+            soonest_diff = pending_with_eta[0][0]
+            soonest = f'   soonest: {_format_eta_seconds(soonest_diff)}'
+        self.about_summary.set_text([
             ('jobheader', '  '),
-            ('jobheader', f'Pending: {total_pending}'),
-            '   ',
-            f'with ETA: {total_eta}',
-            '   ',
-            f'partitions: {len(by_part)}',
+            ('jobheader', f'About to start: {len(pending_with_eta)}'),
+            f'   no ETA: {len(pending_without)}',
+            f'   total pending: {total_pending}',
+            soonest,
         ])
 
         widgets = []
-        if not by_part:
+        if not pending_with_eta and not pending_without:
             widgets.append(u.Text(("faded", "  No pending jobs in the queue")))
         else:
-            # Partition order: highest top-priority job first ("which queue
-            # is the next-to-run job sitting in").
-            ordered = sorted(
-                by_part.items(),
-                key=lambda kv: max(_job_priority(j) for j in kv[1]),
-                reverse=True,
-            )
-            for partition, jobs in ordered:
-                jobs_sorted = sorted(jobs, key=_job_priority, reverse=True)
-                with_eta = sum(1 for j in jobs_sorted if _has_eta(j))
-                widgets.append(PartitionHeaderWidget(
-                    partition, len(jobs_sorted), with_eta, width=width,
-                ))
+            # ETA-known first (sorted by soonest), then unknowns at the end so
+            # the user can still drill into them.
+            for _, job in pending_with_eta:
+                widgets.append(AboutToStartJobWidget(job, width=width))
+            for job in pending_without:
+                widgets.append(AboutToStartJobWidget(job, width=width))
 
-                # Group consecutive same-(user, reason) jobs within partition.
-                groups, cur, cu, cr = [], [], None, None
-                for job in jobs_sorted:
-                    user = getattr(job, 'user_name', EMPTY_PLACEHOLDER)
-                    reason = getattr(job, 'state_reason', EMPTY_PLACEHOLDER)
-                    if user == cu and reason == cr:
-                        cur.append(job)
-                    else:
-                        if cur:
-                            groups.append(cur)
-                        cur, cu, cr = [job], user, reason
-                if cur:
-                    groups.append(cur)
+        self.about_walker.extend(widgets)
+        self._restore_about_focus()
 
-                rank = 1
-                for group in groups:
-                    n = len(group)
-                    s, e = rank, rank + n - 1
-                    # Namespace group keys by partition so identical rank
-                    # ranges across partitions don't share collapse state.
-                    key = f"{partition}:{s}-{e}"
-                    if n == 1:
-                        widgets.append(QueueJobWidget(group[0], rank, width=width))
-                    else:
-                        expanded = key in self.expanded_groups
-                        widgets.append(QueueGroupWidget(
-                            key, s, e, group, width=width, expanded=expanded,
-                        ))
-                        if expanded:
-                            for i, job in enumerate(group):
-                                widgets.append(QueueJobWidget(
-                                    job, s + i, width=width, parent_group_key=key,
-                                ))
-                    rank += n
+    # --- Focus / keypress (about-to-start section) -------------------------
 
-        self.job_walker.extend(widgets)
-        self._restore_focus()
-
-    # --- Focus management (pending section only) ---------------------------
-
-    def _restore_focus(self):
-        """Re-anchor focus on the previously-selected job or group."""
-        if not len(self.job_walker):
+    def _restore_about_focus(self):
+        if not len(self.about_walker):
             return
         if self.selected_jobid is not None:
-            for i, w in enumerate(self.job_walker):
+            for i, w in enumerate(self.about_walker):
                 if getattr(w, 'jobid', None) == self.selected_jobid:
-                    self.job_walker.set_focus(i)
+                    self.about_walker.set_focus(i)
                     return
-        if self.selected_group_key is not None:
-            for i, w in enumerate(self.job_walker):
-                if getattr(w, 'group_key', None) == self.selected_group_key:
-                    self.job_walker.set_focus(i)
-                    return
-        # First render or previously-focused row vanished: focus the first
-        # partition header so the listbox doesn't scroll past it.
-        self.job_walker.set_focus(0)
+        self.about_walker.set_focus(0)
 
-    def _capture_focus(self):
-        """Snapshot current focus so the next rebuild can restore it."""
-        focus_w, _ = self.job_listbox.get_focus()
+    def _capture_about_focus(self):
+        focus_w, _ = self.about_listbox.get_focus()
         if focus_w is None:
             return
         self.selected_jobid = getattr(focus_w, 'jobid', None)
-        self.selected_group_key = (
-            getattr(focus_w, 'group_key', None)
-            or getattr(focus_w, 'parent_group_key', None)
-        )
 
     def keypress(self, size, key):
         if self.main_screen.overlay_showing:
             return key
 
-        focus_w, _ = self.job_listbox.get_focus()
+        focus_w, _ = self.about_listbox.get_focus()
 
-        if key in ('e', 'enter', ' ') and focus_w is not None:
-            # 'e' always toggles the containing group, even from a child row.
-            if key == 'e':
-                gkey = (getattr(focus_w, 'group_key', None)
-                        or getattr(focus_w, 'parent_group_key', None))
-                if gkey:
-                    self._toggle_group(gkey)
-                    return None
-
-            # Enter/Space on a group header toggles it; on a job opens info.
-            if hasattr(focus_w, 'group_key'):
-                self._toggle_group(focus_w.group_key)
-                return None
-            if hasattr(focus_w, 'jobid'):
-                from slop.ui.overlays import JobInfoOverlay
-                job = self.jobs.job_index.get(focus_w.jobid)
-                if job:
-                    self.main_screen.open_overlay(JobInfoOverlay(job, self.main_screen))
-                return None
+        if key == 'enter' and focus_w is not None and hasattr(focus_w, 'jobid'):
+            from slop.ui.overlays import JobInfoOverlay
+            job = self.jobs.job_index.get(focus_w.jobid)
+            if job:
+                self.main_screen.open_overlay(JobInfoOverlay(job, self.main_screen))
+            return None
 
         result = super().keypress(size, key)
-        self._capture_focus()
+        self._capture_about_focus()
         return result
-
-    def _toggle_group(self, key):
-        if key in self.expanded_groups:
-            self.expanded_groups.remove(key)
-        else:
-            self.expanded_groups.add(key)
-        # Anchor focus on the group header so the rebuilt list comes back to
-        # it (whether we toggled from the header itself or from a child row).
-        self.selected_group_key = key
-        self.selected_jobid = None
-        self.update()
