@@ -33,7 +33,7 @@ class ViewManager:
         self.partitions = ScreenViewPartitions(sc, sc.jobs)
         self.states = ScreenViewStates(sc, sc.jobs)
         self.cluster = ScreenViewCluster(sc, sc.cluster_fetcher)
-        self.queue = ScreenViewQueue(sc, sc.jobs, sc.sprio_fetcher, sc.priority_weights)
+        self.queue = ScreenViewQueue(sc, sc.jobs)
         self.scheduler = ScreenViewScheduler(sc, sc.sdiag_fetcher)
         self.report = None  # Created on demand
 
