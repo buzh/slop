@@ -117,7 +117,7 @@ class SC(u.WidgetWrap):
 
         try:
             # Fetch all sources before announcing the refresh, so any view
-            # that re-renders on jobs_updated has fresh aux data (sprio, sdiag,
+            # that re-renders on jobs_updated has fresh aux data (sdiag,
             # cluster) available too.
             await self.jobfetcher.update_once()
             slurm_job_data = await self.jobfetcher.fetch()
