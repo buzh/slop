@@ -5,6 +5,7 @@ from slop.models import Jobs
 from slop.slurm import (
     SlurmJobFetcher,
     SlurmClusterFetcher,
+    SlurmSdiagFetcher,
     SreportFetcher,
     AdaptiveSacctFetcher,
 )
@@ -34,6 +35,7 @@ class SC(u.WidgetWrap):
         self.offline_data_dir = offline_data_dir
         self.jobfetcher = SlurmJobFetcher(loop=self.asyncloop._loop, offline_data_dir=offline_data_dir)
         self.cluster_fetcher = SlurmClusterFetcher(loop=self.asyncloop._loop, offline_data_dir=offline_data_dir)
+        self.sdiag_fetcher = SlurmSdiagFetcher(loop=self.asyncloop._loop, offline_data_dir=offline_data_dir)
         self.sreport_fetcher = SreportFetcher(offline_data_dir=offline_data_dir)
         self.adaptive_sacct = AdaptiveSacctFetcher(offline_data_dir=offline_data_dir)
         self.jobs = Jobs(self.jobfetcher.fetch_sync())
@@ -93,6 +95,7 @@ class SC(u.WidgetWrap):
     def show_screen_states(self):   return self.views.show_states()
     def show_screen_cluster(self):  return self.views.show_cluster()
     def show_screen_queue(self):    return self.views.show_queue()
+    def show_screen_scheduler(self): return self.views.show_scheduler()
     def show_screen_report(self):   return self.views.show_report()
 
     def get_f1_label(self):
@@ -111,6 +114,7 @@ class SC(u.WidgetWrap):
             slurm_job_data = await self.jobfetcher.fetch()
             self.jobs.update_slurmdata(slurm_job_data)
             await self.cluster_fetcher.fetch()
+            await self.sdiag_fetcher.fetch()
 
             target = self.views.auto_refresh_target()
             if target is not None:
@@ -128,7 +132,8 @@ class SC(u.WidgetWrap):
         for screen in self.views.all_resizable():
             screen.on_resize()
 
-        footer_types = ['myjobs', 'users', 'accounts', 'partitions', 'states', 'cluster']
+        footer_types = ['myjobs', 'users', 'accounts', 'partitions', 'states',
+                        'cluster', 'history', 'queue', 'scheduler']
         if 0 <= self.views.current < len(footer_types):
             self.footer.update(footer_types[self.views.current], f1_label=self.get_f1_label())
 
@@ -204,6 +209,7 @@ class SC(u.WidgetWrap):
             'f5': self.show_screen_cluster,
             'f6': self.show_screen_report,
             'f7': self.show_screen_queue,
+            'f8': self.show_screen_scheduler,
         }
         if key in view_map:
             view_map[key]()

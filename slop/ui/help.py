@@ -11,6 +11,7 @@ VIEW_NAMES = {
     5: "Cluster",
     6: "History",
     7: "Queue",
+    8: "Scheduler",
 }
 
 
@@ -28,6 +29,7 @@ def build_help_text(current_view, fetch_duration):
         "  F5       Cluster Resources",
         "  F6       History / User Report",
         "  F7       Queue Status",
+        "  F8       Scheduler Health (sdiag)",
         "",
         ("success", "COMMON ACTIONS"),
         "  /        Search (job ID, user, account, or node)",

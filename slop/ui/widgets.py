@@ -342,11 +342,11 @@ class Footer(u.WidgetWrap):
 
         # Build shortcuts based on screen width
         if screen_width < 90:
-            text = "F1-7:Views ?:Help q:Quit"
+            text = "F1-8:Views ?:Help q:Quit"
         elif screen_width < 140:
-            text = "F1-F7: Views | ?: Help | q: Quit"
+            text = "F1-F8: Views | ?: Help | q: Quit"
         else:
-            text = "F1: Jobs/Users | F2: Accounts | F3: Partitions | F4: States | F5: Cluster | F6: History | F7: Queue | ?: Help | q: Quit"
+            text = "F1: Jobs/Users | F2: Accounts | F3: Partitions | F4: States | F5: Cluster | F6: History | F7: Queue | F8: Scheduler | ?: Help | q: Quit"
 
         self.text.set_text(text)
 
