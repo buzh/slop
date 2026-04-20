@@ -368,12 +368,13 @@ class GenericOverlayText(u.WidgetWrap):
 
 
 class HelpOverlay(u.WidgetWrap):
-    """Overlay for displaying keyboard shortcuts help."""
-    def __init__(self, main_screen, text_lines):
+    """Overlay for displaying scrollable text content (help, diagnostics, ...)."""
+    def __init__(self, main_screen, text_lines, title='Help'):
         """
         Args:
             main_screen: Main screen instance
             text_lines: List of strings or (attr, string) tuples
+            title: Title shown in the overlay's rounded border
         """
         self.overlay_height = len(text_lines) + 4  # pad with 4 extra lines
 
@@ -388,7 +389,7 @@ class HelpOverlay(u.WidgetWrap):
                 widgets.append(u.Text(line))
 
         listbox = u.ListBox(u.SimpleFocusListWalker(widgets))
-        widget = u.AttrMap(rounded_box(listbox, title='Help'), 'bg')
+        widget = u.AttrMap(rounded_box(listbox, title=title), 'bg')
         u.WidgetWrap.__init__(self, widget)
 
 

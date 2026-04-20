@@ -15,7 +15,7 @@ VIEW_NAMES = {
 }
 
 
-def build_help_text(current_view, fetch_duration):
+def build_help_text(current_view):
     """Return the urwid markup list shown in the help overlay."""
     current_view_name = VIEW_NAMES.get(current_view, "Unknown")
     return [
@@ -34,6 +34,7 @@ def build_help_text(current_view, fetch_duration):
         ("success", "COMMON ACTIONS"),
         "  /        Search (job ID, user, account, or node)",
         "  ?        Show this help",
+        "  !        Show fetcher diagnostics (timings, errors)",
         "  q        Quit (with confirmation)",
         "  Esc      Close overlay / Go back",
         "",
@@ -65,5 +66,45 @@ def build_help_text(current_view, fetch_duration):
         ("faded", f"Current view: {current_view_name}"),
         ("faded", "License: GNU GPL v3.0 | © 2025 Andreas Skau"),
         ("faded", "GitHub: https://github.com/buzh/slop"),
-        ("faded", f"scontrol fetch time: {fetch_duration:.1f}s"),
     ]
+
+
+def _fmt_duration(td):
+    """Render a timedelta as 'NNN ms' / 'X.Xs', or '—' if zero/None."""
+    if td is None:
+        return "—"
+    secs = td.total_seconds()
+    if secs <= 0:
+        return "—"
+    if secs < 1:
+        return f"{int(secs * 1000)} ms"
+    return f"{secs:.1f}s"
+
+
+def build_diagnostics_text(fetchers):
+    """Return urwid markup for the diagnostics overlay.
+
+    `fetchers` is a list of dicts with keys: name, command, fetcher.
+    """
+    lines = [
+        ("jobheader", f"  slop {__version__} - Fetcher Diagnostics  "),
+        "",
+        ("success", "Last fetch timings, configured timeout, and most recent error per command."),
+        "",
+    ]
+    for entry in fetchers:
+        name = entry['name']
+        cmd = entry['command']
+        f = entry['fetcher']
+        duration = _fmt_duration(getattr(f, 'last_fetch_duration', None))
+        timeout = getattr(f, 'timeout', None)
+        timeout_str = f"{timeout}s" if timeout is not None else "—"
+        err = getattr(f, 'last_error', None)
+
+        lines.append(("success", f"  {name}"))
+        lines.append(("faded", f"    $ {cmd}"))
+        lines.append(f"    last: {duration}    timeout: {timeout_str}")
+        if err:
+            lines.append(("error", f"    error: {err}"))
+        lines.append("")
+    return lines

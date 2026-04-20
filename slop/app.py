@@ -13,7 +13,7 @@ from slop.ui.widgets import Header, Footer, GenericOverlayText, HelpOverlay
 from slop.ui.views import ScreenViewReport
 from slop.ui.overlays import ConfirmExit, SearchOverlay
 from slop.ui.style import PALETTE
-from slop.ui.help import build_help_text
+from slop.ui.help import build_help_text, build_diagnostics_text
 from slop.ui.view_manager import ViewManager
 
 
@@ -146,9 +146,20 @@ class SC(u.WidgetWrap):
 
     def show_app_info(self):
         """Display application information and keyboard shortcuts overlay."""
-        fetch_duration = self.jobfetcher.last_fetch_duration.total_seconds()
-        help_text = build_help_text(self.views.current, fetch_duration)
+        help_text = build_help_text(self.views.current)
         self.open_overlay(HelpOverlay(self, help_text))
+
+    def show_diagnostics(self):
+        """Display per-fetcher timings and error state."""
+        fetchers = [
+            {'name': 'Jobs',      'command': 'scontrol --json show jobs',       'fetcher': self.jobfetcher},
+            {'name': 'Cluster',   'command': 'scontrol --json show nodes/partitions', 'fetcher': self.cluster_fetcher},
+            {'name': 'Scheduler', 'command': 'sdiag --json',                    'fetcher': self.sdiag_fetcher},
+            {'name': 'sreport',   'command': 'sreport cluster AccountUtilizationByUser ...', 'fetcher': self.sreport_fetcher},
+            {'name': 'sacct',     'command': 'sacct --json -u <user> -S <date>', 'fetcher': self.adaptive_sacct},
+        ]
+        text = build_diagnostics_text(fetchers)
+        self.open_overlay(HelpOverlay(self, text, title='Diagnostics'))
 
     def open_search(self):
         """Open search overlay."""
@@ -224,6 +235,10 @@ class SC(u.WidgetWrap):
 
         if key == '?':
             self.show_app_info()
+            return
+
+        if key == '!':
+            self.show_diagnostics()
             return
 
         if key == 'esc' and self.overlay_showing:
