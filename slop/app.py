@@ -1,6 +1,7 @@
 import urwid as u
 import asyncio
 import os
+import time
 from slop.models import Jobs
 from slop.slurm import (
     SlurmJobFetcher,
@@ -40,6 +41,11 @@ class SC(u.WidgetWrap):
         self.adaptive_sacct = AdaptiveSacctFetcher(offline_data_dir=offline_data_dir)
         self.jobs = Jobs(self.jobfetcher.fetch_sync())
         self.refreshing = False
+        # Throttle slow-moving fetchers below the 3s job-refresh cadence.
+        self._cluster_interval = 10
+        self._cluster_next_fetch = 0.0
+        self._sdiag_interval = 30
+        self._sdiag_next_fetch = 0.0
 
         # UI components
         self.header = Header(self)
@@ -115,8 +121,13 @@ class SC(u.WidgetWrap):
             # cluster) available too.
             await self.jobfetcher.update_once()
             slurm_job_data = await self.jobfetcher.fetch()
-            await self.cluster_fetcher.fetch()
-            await self.sdiag_fetcher.fetch()
+            now = time.monotonic()
+            if now >= self._cluster_next_fetch:
+                await self.cluster_fetcher.fetch()
+                self._cluster_next_fetch = now + self._cluster_interval
+            if now >= self._sdiag_next_fetch:
+                await self.sdiag_fetcher.fetch()
+                self._sdiag_next_fetch = now + self._sdiag_interval
             self.jobs.update_slurmdata(slurm_job_data)
 
             target = self.views.auto_refresh_target()
