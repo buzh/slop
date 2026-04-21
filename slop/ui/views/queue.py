@@ -436,17 +436,23 @@ class ScreenViewQueue(u.WidgetWrap):
         section_pile.contents = [(w, ('pack', None)) for w in widgets]
 
     def _render_ended_section(self, width, cap):
-        # Oldest end at the top, freshest at the bottom — same upward "flow"
-        # as the rest of the view: jobs bubble up from "Finishing soon" into
-        # the bottom of this section and drift up before being evicted.
+        # Sort oldest-first, then keep the newest cap entries. Display order
+        # is oldest-at-top / newest-at-bottom — the upward "flow" of the
+        # view: a job vanishing from scontrol lands at the bottom of this
+        # section and drifts up before being evicted off the top.
         items = sorted(self.ended_tracker.values(), key=lambda v: v[1])
-        title = SectionBanner(f"Just ended  ({len(items)})", width=width)
+        if cap:
+            items = items[-cap:]
+
+        # No count in the title: it's the "most recently ended N" where N is
+        # whatever fits, same as the other dynamic sections.
+        title = SectionBanner("Just ended", width=width)
         col_header = u.AttrMap(u.Text(_ended_header(width)), 'faded')
         body = [title, col_header]
         if not items:
             body.append(u.Text(("faded", "  (no jobs ended since the view opened)")))
         else:
-            for snap, _ts_seen in items[:cap] if cap else []:
+            for snap, _ts_seen in items:
                 body.append(EndedJobWidget(snap, width=width))
         self._set_section_contents(self.ended_section, body)
 
@@ -496,18 +502,24 @@ class ScreenViewQueue(u.WidgetWrap):
                 continue
             start_ts = ts(getattr(j, 'start_time', {}))
             candidates.append((start_ts, j))
-        # Oldest start at the top, newest at the bottom — matches the upward
-        # "flow" of the view (freshly-started jobs bubble up from pending).
+        # Sort oldest-first so the slice below keeps the newest. After
+        # slicing, the visible block stays oldest-at-top / newest-at-bottom,
+        # matching the upward "flow" of the view: a freshly-started job
+        # appears at the bottom and drifts up as more jobs start behind it.
         candidates.sort(key=lambda x: x[0])
+        if cap:
+            candidates = candidates[-cap:]  # keep newest, drop oldest off the top
 
-        title = SectionBanner(f"Just started  ({len(candidates)})", width=width)
+        # No count in the title: this section is always "the most recently
+        # started N jobs" where N is whatever fits in the window.
+        title = SectionBanner("Just started", width=width)
         col_header = u.AttrMap(u.Text(_started_header(width)), 'faded')
         body = [title, col_header]
         if not candidates:
             body.append(u.Text(
                 ("faded", "  (no jobs have started in the last 15 minutes)")))
         else:
-            for _, job in candidates[:cap] if cap else []:
+            for _, job in candidates:
                 body.append(StartedJobWidget(job, width=width))
         self._set_section_contents(self.started_section, body)
 
