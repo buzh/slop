@@ -24,8 +24,8 @@ def unhandled_input(key: str) -> None:
         raise u.ExitMainLoop()
 
 
-class SC(u.WidgetWrap):
-    """Main screen controller for slop TUI."""
+class Slop(u.WidgetWrap):
+    """Main screen controller for the slop TUI."""
 
     def __init__(self, offline_data_dir=None):
         self.palette = PALETTE
@@ -116,18 +116,20 @@ class SC(u.WidgetWrap):
         self.refreshing = True
 
         try:
-            # Fetch all sources before announcing the refresh, so any view
-            # that re-renders on jobs_updated has fresh aux data (sdiag,
-            # cluster) available too.
-            await self.jobfetcher.update_once()
-            slurm_job_data = await self.jobfetcher.fetch()
+            # Run all due fetchers in parallel; cluster/sdiag are throttled
+            # below the 3s job cadence and only run when their interval has
+            # elapsed. Wait for all before announcing the refresh, so views
+            # that re-render on jobs_updated see fresh aux data too.
             now = time.monotonic()
+            fetches = [self.jobfetcher.update_once()]
             if now >= self._cluster_next_fetch:
-                await self.cluster_fetcher.fetch()
+                fetches.append(self.cluster_fetcher.fetch())
                 self._cluster_next_fetch = now + self._cluster_interval
             if now >= self._sdiag_next_fetch:
-                await self.sdiag_fetcher.fetch()
+                fetches.append(self.sdiag_fetcher.fetch())
                 self._sdiag_next_fetch = now + self._sdiag_interval
+            await asyncio.gather(*fetches)
+            slurm_job_data = await self.jobfetcher.fetch()
             self.jobs.update_slurmdata(slurm_job_data)
 
             target = self.views.auto_refresh_target()

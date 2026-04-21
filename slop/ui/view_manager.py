@@ -1,6 +1,6 @@
 """Owns the screen instances and handles view switching for the main app.
 
-`SC` keeps thin `show_screen_*` proxies so external callers (e.g., overlays
+`Slop` keeps thin `show_screen_*` proxies so external callers (e.g., overlays
 calling `main_screen.show_screen_users()`) and the `keypress` dispatch don't
 need to learn a new API.
 """
