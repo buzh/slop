@@ -594,8 +594,9 @@ class ScreenViewQueue(u.WidgetWrap):
                  if s.get('start_ts', 0) > 0 and s.get('submit_ts', 0) > 0
                  and s['start_ts'] >= s['submit_ts']]
 
-        parts = [f"{completed} completed", f"{canceled} canceled",
-                 f"{failed} failed", f"{other} other"]
+        parts = [f"{n} {label}" for n, label in
+                 ((completed, 'completed'), (canceled, 'canceled'),
+                  (failed, 'failed'), (other, 'other')) if n]
         if runtimes:
             parts.append(f"avg runtime {coarse_duration(int(sum(runtimes) / len(runtimes)))}")
         if waits:
