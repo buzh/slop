@@ -577,8 +577,15 @@ class ScreenViewQueue(u.WidgetWrap):
         # Floor at 1s so coarse_duration always returns something readable.
         span_str = coarse_duration(max(1, span))
 
+        # Break out the headline terminal states. "Other" catches the long
+        # tail (TIMEOUT, OUT_OF_MEMORY, DEADLINE, NODE_FAIL, BOOT_FAIL,
+        # PREEMPTED, REQUEUED, ...) so the four counts always sum to total.
+        # CA is intentionally separate from F: a user-cancelled job isn't
+        # a failure of the job itself.
         completed = sum(1 for s in snaps if s.get('state') == 'COMPLETED')
-        failed = len(snaps) - completed
+        canceled  = sum(1 for s in snaps if s.get('state') == 'CANCELLED')
+        failed    = sum(1 for s in snaps if s.get('state') == 'FAILED')
+        other     = len(snaps) - completed - canceled - failed
 
         runtimes = [s['end_ts'] - s['start_ts'] for s in snaps
                     if s.get('start_ts', 0) > 0
@@ -587,7 +594,8 @@ class ScreenViewQueue(u.WidgetWrap):
                  if s.get('start_ts', 0) > 0 and s.get('submit_ts', 0) > 0
                  and s['start_ts'] >= s['submit_ts']]
 
-        parts = [f"{completed} completed", f"{failed} failed"]
+        parts = [f"{completed} completed", f"{canceled} canceled",
+                 f"{failed} failed", f"{other} other"]
         if runtimes:
             parts.append(f"avg runtime {coarse_duration(int(sum(runtimes) / len(runtimes)))}")
         if waits:
