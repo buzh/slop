@@ -473,11 +473,14 @@ class ScreenViewQueue(u.WidgetWrap):
         section_pile.contents = [(w, ('pack', None)) for w in widgets]
 
     def _render_ended_section(self, width, cap):
-        # Sort oldest-first, then keep the newest cap entries. Display order
-        # is oldest-at-top / newest-at-bottom — the upward "flow" of the
-        # view: a job vanishing from scontrol lands at the bottom of this
-        # section and drifts up before being evicted off the top.
-        items = sorted(self.ended_tracker.values(), key=lambda v: v[1])
+        # Sort by the job's own end_time (ascending), then keep the newest cap
+        # entries. Display order is oldest-at-top / newest-at-bottom — the
+        # upward "flow" of the view: a job that just ended lands at the
+        # bottom and drifts up before being evicted off the top. Sorting by
+        # end_time (rather than the monotonic "noticed gone" tick) keeps the
+        # ordering correct even when a refresh notices several vanished jobs
+        # at once and the tracker timestamps are tied.
+        items = sorted(self.ended_tracker.values(), key=lambda v: v[0]['end_ts'])
         if cap:
             items = items[-cap:]
 
