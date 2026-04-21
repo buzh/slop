@@ -43,6 +43,11 @@ from slop.ui.views.queue_helpers import (
 
 # How long after start_time a job still counts as "just started".
 STARTED_MAX_AGE = 15 * 60
+# Tolerance for start_time being slightly in the future relative to our local
+# clock. Slurm sometimes reports a scheduler-side timestamp a few seconds
+# ahead of the host's wall clock; without this tolerance the job is rejected
+# from "Just started" and silently falls into "Finishing soon".
+STARTED_FUTURE_TOLERANCE = 5 * 60
 
 
 # ----- Lifecycle helpers --------------------------------------------------
@@ -61,7 +66,7 @@ def _is_just_started(job, now):
     if start_ts <= 0:
         return False
     age = now - start_ts
-    return 0 <= age <= STARTED_MAX_AGE
+    return -STARTED_FUTURE_TOLERANCE <= age <= STARTED_MAX_AGE
 
 
 def _snapshot_job(job):
@@ -470,7 +475,10 @@ class ScreenViewQueue(u.WidgetWrap):
             candidates.append((remaining, j))
         candidates.sort(key=lambda x: x[0])
 
-        title = SectionBanner(f"Finishing soon  ({len(candidates)})", width=width)
+        # No count in the title: this section is always "the next N jobs to
+        # finish" where N is whatever fits in the window — the total number
+        # of running jobs would just be misleading.
+        title = SectionBanner("Finishing soon", width=width)
         col_header = u.AttrMap(u.Text(_finishing_header(width)), 'faded')
         body = [title, col_header]
         if not candidates:
