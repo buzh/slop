@@ -95,12 +95,12 @@ def _snapshot_job(job):
     }
 
 
-def _format_submit_ts(submit_ts):
+def _format_clock_ts(epoch_ts):
     """`HH:MM` if today, else `dd/mm HH:MM` — matches the main job-list view."""
-    if not submit_ts:
+    if not epoch_ts:
         return EMPTY_PLACEHOLDER
     import datetime as _dt
-    t = _dt.datetime.fromtimestamp(int(submit_ts))
+    t = _dt.datetime.fromtimestamp(int(epoch_ts))
     if t.date() == _dt.datetime.now().date():
         return t.strftime('%H:%M')
     return t.strftime('%d/%m %H:%M')
@@ -126,6 +126,7 @@ ENDED_LAYOUT = [
     ('Account',   'left',  'weight',  3, 'ellipsis'),
     ('Partition', 'left',  'weight',  3, 'ellipsis'),
     ('Submitted', 'left',  'given',  11, 'clip'),
+    ('Ended',     'left',  'given',  11, 'clip'),
     ('Used',      'right', 'given',   9, 'clip'),
     ('Limit',     'right', 'given',   9, 'clip'),
     ('Exit',      'left',  'given',  11, 'clip'),
@@ -215,7 +216,8 @@ class EndedJobWidget(_ReadOnlyRow):
             snap['user'],
             snap.get('account') or EMPTY_PLACEHOLDER,
             snap['partition'],
-            _format_submit_ts(snap['submit_ts']),
+            _format_clock_ts(snap['submit_ts']),
+            _format_clock_ts(snap['end_ts']),
             used_str,
             limit_str,
             snap['returncode'],
