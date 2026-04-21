@@ -15,6 +15,7 @@ import datetime
 import re
 from slop.utils import format_duration
 from slop.ui.constants import EMPTY_PLACEHOLDER
+from slop.ui.widgets import SectionBanner
 
 
 _DUR_TOKEN_RE = re.compile(r'\d+[dhms]')
@@ -229,19 +230,12 @@ class QueueGroupWidget(u.WidgetWrap):
         return u.AttrMap(u.Text(text), _reason_attr(reason), 'normal_selected')
 
 
-class PartitionHeaderWidget(u.WidgetWrap):
-    """Non-selectable section header: partition name + pending counts."""
-
-    def __init__(self, partition, total, with_eta, width=120):
-        title = f"  {partition}  ({total} pending"
-        if with_eta:
-            title += f", {with_eta} with ETA"
-        title += ")"
-        line = title.ljust(max(width, len(title)))
-        super().__init__(u.AttrMap(u.Text(line), 'jobheader'))
-
-    def selectable(self):
-        return False
+def _partition_banner(partition, total, with_eta, width):
+    label = f"{partition}  ({total} pending"
+    if with_eta:
+        label += f", {with_eta} with ETA"
+    label += ")"
+    return SectionBanner(label, width=width)
 
 
 # ----- The widget ---------------------------------------------------------
@@ -322,8 +316,8 @@ class PendingListWidget(u.WidgetWrap):
             for partition, jobs in ordered:
                 jobs_sorted = sorted(jobs, key=_job_priority, reverse=True)
                 with_eta = sum(1 for j in jobs_sorted if _has_eta(j))
-                widgets.append(PartitionHeaderWidget(
-                    partition, len(jobs_sorted), with_eta, width=width,
+                widgets.append(_partition_banner(
+                    partition, len(jobs_sorted), with_eta, width,
                 ))
 
                 # Group consecutive same-(user, reason) jobs within partition.

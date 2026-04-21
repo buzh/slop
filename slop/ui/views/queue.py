@@ -22,9 +22,10 @@ import urwid as u
 import datetime
 import re
 import time
-from slop.utils import format_duration, compact_tres, compact_tres_str
+from slop.utils import format_duration, compact_tres
 from slop.ui.constants import EMPTY_PLACEHOLDER
-from slop.ui.widgets import rounded_box
+from slop.ui.widgets import rounded_box, SectionBanner
+from slop.ui.state_style import state_attr, state_short
 
 
 _DUR_TOKEN_RE = re.compile(r'\d+[dhms]')
@@ -113,29 +114,6 @@ def _reason_attr(reason):
 
 
 # ----- Lifecycle helpers --------------------------------------------------
-
-_STATE_SHORT = {
-    'COMPLETED': 'CD', 'FAILED': 'F', 'CANCELLED': 'CA',
-    'TIMEOUT': 'TO', 'OUT_OF_MEMORY': 'OOM', 'NODE_FAIL': 'NF',
-    'PREEMPTED': 'PR', 'BOOT_FAIL': 'BF', 'DEADLINE': 'DL',
-    'RUNNING': 'R', 'PENDING': 'PD', 'SUSPENDED': 'S',
-    'COMPLETING': 'CG',
-}
-
-
-def _state_short(state):
-    return _STATE_SHORT.get(state, (state or '?')[:3])
-
-
-def _state_attr(state):
-    if state == 'COMPLETED':
-        return 'success'
-    if state in ('FAILED', 'NODE_FAIL', 'OUT_OF_MEMORY', 'BOOT_FAIL'):
-        return 'error'
-    if state in ('CANCELLED', 'TIMEOUT', 'PREEMPTED', 'DEADLINE'):
-        return 'warning'
-    return 'normal'
-
 
 def _snapshot_job(job):
     """Capture enough data to render a row even after the job leaves scontrol."""
@@ -240,7 +218,7 @@ class EndedJobWidget(_ReadOnlyRow):
                      if snap['time_limit_min'] else EMPTY_PLACEHOLDER)
         text = _format_ended_row(
             width,
-            state=_state_short(snap['state']),
+            state=state_short(snap['state']),
             jobid=str(snap['jobid'])[:9],
             user=str(snap['user'])[:12],
             partition=str(snap['partition'])[:14],
@@ -250,7 +228,7 @@ class EndedJobWidget(_ReadOnlyRow):
             resources=(snap.get('resources') or EMPTY_PLACEHOLDER)[:18],
             name=str(snap['name'])[:25],
         )
-        super().__init__(u.AttrMap(u.Text(text), _state_attr(snap['state'])))
+        super().__init__(u.AttrMap(u.Text(text), state_attr(snap['state'])))
 
 
 class FinishingJobWidget(_ReadOnlyRow):
@@ -265,7 +243,7 @@ class FinishingJobWidget(_ReadOnlyRow):
         state = job.job_state[0] if getattr(job, 'job_state', None) else 'R'
         text = _format_finishing_row(
             width,
-            state=_state_short(state),
+            state=state_short(state),
             jobid=str(job.job_id)[:9],
             user=str(getattr(job, 'user_name', EMPTY_PLACEHOLDER))[:12],
             partition=_job_partition(job)[:14],
@@ -291,7 +269,7 @@ class StartedJobWidget(_ReadOnlyRow):
                    else EMPTY_PLACEHOLDER)
         text = _format_started_row(
             width,
-            state=_state_short(snap['state']),
+            state=state_short(snap['state']),
             jobid=str(snap['jobid'])[:9],
             user=str(snap['user'])[:12],
             partition=str(snap['partition'])[:14],
@@ -300,7 +278,7 @@ class StartedJobWidget(_ReadOnlyRow):
             resources=(snap.get('resources') or EMPTY_PLACEHOLDER)[:18],
             name=str(snap['name'])[:25],
         )
-        super().__init__(u.AttrMap(u.Text(text), _state_attr(snap['state'])))
+        super().__init__(u.AttrMap(u.Text(text), state_attr(snap['state'])))
 
 
 class AboutToStartJobWidget(u.WidgetWrap):
@@ -347,17 +325,6 @@ class AboutToStartJobWidget(u.WidgetWrap):
         else:
             attr = _reason_attr(reason)
         return u.AttrMap(u.Text(text), attr, 'normal_selected')
-
-
-class SectionTitleWidget(u.WidgetWrap):
-    """Banner row for a top-of-screen lifecycle section."""
-
-    def __init__(self, label, count, width=120):
-        text = f"  {label}  ({count})".ljust(max(width, 1))
-        super().__init__(u.AttrMap(u.Text(text), 'jobheader'))
-
-    def selectable(self):
-        return False
 
 
 # ----- Screen -------------------------------------------------------------
@@ -534,7 +501,7 @@ class ScreenViewQueue(u.WidgetWrap):
 
     def _render_ended_section(self, width, cap):
         items = sorted(self.ended_tracker.values(), key=lambda v: v[1], reverse=True)
-        title = SectionTitleWidget("Just ended", len(items), width=width)
+        title = SectionBanner(f"Just ended  ({len(items)})", width=width)
         col_header = u.AttrMap(u.Text(_ended_header(width)), 'faded')
         body = [title, col_header]
         if not items:
@@ -561,7 +528,7 @@ class ScreenViewQueue(u.WidgetWrap):
             candidates.append((remaining, j))
         candidates.sort(key=lambda x: x[0])
 
-        title = SectionTitleWidget("Finishing soon", len(candidates), width=width)
+        title = SectionBanner(f"Finishing soon  ({len(candidates)})", width=width)
         col_header = u.AttrMap(u.Text(_finishing_header(width)), 'faded')
         body = [title, col_header]
         if not candidates:
@@ -573,7 +540,7 @@ class ScreenViewQueue(u.WidgetWrap):
 
     def _render_started_section(self, width, cap):
         items = sorted(self.started_tracker.values(), key=lambda v: v[1], reverse=True)
-        title = SectionTitleWidget("Just started", len(items), width=width)
+        title = SectionBanner(f"Just started  ({len(items)})", width=width)
         col_header = u.AttrMap(u.Text(_started_header(width)), 'faded')
         body = [title, col_header]
         if not items:

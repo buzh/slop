@@ -3,10 +3,11 @@ import urwid as u
 import datetime
 import os
 from slop.models import Jobs
-from slop.utils import format_duration, smart_truncate
+from slop.utils import format_duration, smart_truncate, compact_tres
 from slop.ui.constants import EMPTY_PLACEHOLDER
 from slop.ui.overlays import JobInfoOverlay
 from slop.ui.widgets import SectionHeader, rounded_box
+from slop.ui.state_style import state_icon, width_tier
 from slop.slurm.history_fetcher import HistoryFetcher
 
 
@@ -42,21 +43,9 @@ class MyJobDetailWidget(u.WidgetWrap):
         """Build aligned columns for the job."""
         job = self.job
         state = job.job_state[0] if job.job_state else 'UNKNOWN'
+        icon = state_icon(state, style='detail')
 
-        # State icons
-        icons = {
-            'RUNNING': '▶',
-            'COMPLETING': '▶',
-            'PENDING': '⏸',
-            'COMPLETED': '✓',
-            'FAILED': '✗',
-            'TIMEOUT': '⏱',
-            'CANCELLED': '⊗',
-            'OUT_OF_MEMORY': '⚠',
-        }
-        icon = icons.get(state, '•')
-
-        if state in ['RUNNING', 'COMPLETING']:
+        if state in ('RUNNING', 'COMPLETING'):
             return self._running_columns(icon)
         elif state == 'PENDING':
             return self._pending_columns(icon)
@@ -89,22 +78,19 @@ class MyJobDetailWidget(u.WidgetWrap):
             time_text = f"{elapsed_str}/{limit_str}[{bar}]"
 
         # Resources
-        resources = self._get_compact_resources(job)
+        resources = compact_tres(job) or EMPTY_PLACEHOLDER
 
         # Node
         node = job.nodes if job.nodes else EMPTY_PLACEHOLDER
 
-        # Format based on available width
-        if self.width < 90:
-            # Narrow: just essentials
+        tier = width_tier(self.width)
+        if tier == 'narrow':
             name = self._truncate(job.name, 15)
             line = f"{icon} {job_id:>7} {name:<17} {elapsed_str:>7}"
-        elif self.width < 120:
-            # Medium: add time progress
+        elif tier == 'medium':
             name = self._truncate(job.name, 18)
             line = f"{icon} {job_id:>7} {name:<20} {time_text:<30}"
         else:
-            # Wide: full detail
             name = self._truncate(job.name, 22)
             line = f"{icon} {job_id:>7} {name:<22} {time_text:<30} {resources:<12} {node}"
 
@@ -131,19 +117,16 @@ class MyJobDetailWidget(u.WidgetWrap):
         reason_short = self._abbreviate_reason(reason)
 
         # Resources
-        resources = self._get_compact_resources(job)
+        resources = compact_tres(job) or EMPTY_PLACEHOLDER
 
-        # Format based on available width
-        if self.width < 90:
-            # Narrow: essentials only
+        tier = width_tier(self.width)
+        if tier == 'narrow':
             name = self._truncate(job.name, 15)
             line = f"{icon} {job_id:>7} {name:<17} {reason_short:<8}"
-        elif self.width < 120:
-            # Medium
+        elif tier == 'medium':
             name = self._truncate(job.name, 18)
             line = f"{icon} {job_id:>7} {name:<20} {wait_text:<14} {reason_short:<10}"
         else:
-            # Wide: full detail
             name = self._truncate(job.name, 22)
             line = f"{icon} {job_id:>7} {name:<22} {wait_text:<14} {reason_short:<10} {resources:<12} {job.partition}"
 
@@ -170,57 +153,20 @@ class MyJobDetailWidget(u.WidgetWrap):
             exit_text = f"exit:{job.returncode}"
 
         # Resources
-        resources = self._get_compact_resources(job)
+        resources = compact_tres(job) or EMPTY_PLACEHOLDER
 
-        # Format based on available width
-        if self.width < 90:
-            # Narrow: essentials only
+        tier = width_tier(self.width)
+        if tier == 'narrow':
             name = self._truncate(job.name, 15)
             line = f"{icon} {job_id:>7} {name:<17} {exit_text:<12}"
-        elif self.width < 120:
-            # Medium
+        elif tier == 'medium':
             name = self._truncate(job.name, 18)
             line = f"{icon} {job_id:>7} {name:<20} {runtime_text:<12} {exit_text:<15}"
         else:
-            # Wide: full detail
             name = self._truncate(job.name, 22)
             line = f"{icon} {job_id:>7} {name:<22} {runtime_text:<12} {exit_text:<15} {resources}"
 
         return u.Text(line)
-
-    def _get_compact_resources(self, job):
-        """Extract compact resource string: 16c 64G"""
-        parts = []
-
-        # Parse TRES
-        tres_str = job.tres_alloc_str if job.tres_alloc_str else job.tres_req_str
-        if tres_str:
-            tres_dict = {}
-            for item in tres_str.split(','):
-                if '=' in item:
-                    key, val = item.split('=', 1)
-                    tres_dict[key] = val
-
-            # CPU
-            if 'cpu' in tres_dict:
-                parts.append(f"{tres_dict['cpu']}c")
-
-            # Memory (abbreviated)
-            if 'mem' in tres_dict:
-                mem = tres_dict['mem']
-                # Simplify memory display
-                if mem.endswith('G'):
-                    parts.append(mem)
-                elif mem.endswith('M'):
-                    parts.append(mem)
-                else:
-                    parts.append(mem)
-
-            # GPU
-            if 'gres/gpu' in tres_dict:
-                parts.append(f"{tres_dict['gres/gpu']}gpu")
-
-        return ' '.join(parts) if parts else EMPTY_PLACEHOLDER
 
     def _abbreviate_reason(self, reason):
         """Abbreviate common reasons."""

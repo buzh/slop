@@ -5,6 +5,7 @@ from slop.utils import format_duration, nice_tres, compact_tres, compress_int_ra
 from slop.slurm import is_running, is_pending, is_ended, job_state_short
 from slop import __version__
 from slop.ui.style import get_display_attr
+from slop.ui.state_style import state_icon, state_attr
 from slop.ui.constants import EMPTY_PLACEHOLDER
 
 
@@ -23,21 +24,8 @@ class ChildJobWidget(u.WidgetWrap):
         # Build compact, informative display for array child
         task_id = job._task_id if hasattr(job, '_task_id') and job._task_id is not None else EMPTY_PLACEHOLDER
 
-        # Determine state symbol and color
-        if "COMPLETED" in job.states:
-            symbol, color = "✓", "state_running"
-        elif {"FAILED", "NODE_FAIL", "OUT_OF_MEMORY"} & job.states:
-            symbol, color = "✗", "state_failed"
-        elif "TIMEOUT" in job.states:
-            symbol, color = "⚠", "warning"
-        elif "CANCELLED" in job.states:
-            symbol, color = "⊗", "faded"
-        elif {"RUNNING", "COMPLETING"} & job.states:
-            symbol, color = "↻", "state_running"
-        elif "PENDING" in job.states:
-            symbol, color = "⋯", "state_pending"
-        else:
-            symbol, color = "·", "faded"
+        primary_state = job.job_state[0] if job.job_state else ''
+        symbol = state_icon(primary_state)
 
         # Build display based on state
         if is_running(job):
@@ -147,38 +135,13 @@ class UserJobListWidget(u.WidgetWrap):
             if col == "job_state":
                 # For array parents with running children, show as running regardless of parent state
                 if job.is_array_parent and job.has_running_children:
-                    symbol = "↻"
-                    text_attr = "state_running"  # green
-                    # Show R instead of parent's actual state for clarity
+                    primary = "RUNNING"
                     short_states = "R"
                 else:
-                    # Always use short form with color and symbol
+                    primary = job.job_state[0] if job.job_state else ''
                     short_states = ",".join(job_state_short.get(s, f"?{s}") for s in job.job_state)
-
-                    # Determine symbol and color based on state
-                    if "COMPLETED" in job.states:
-                        symbol = "✓"
-                        text_attr = "state_running"  # green
-                    elif {"FAILED", "NODE_FAIL", "OUT_OF_MEMORY"} & job.states:
-                        symbol = "✗"
-                        text_attr = "state_failed"  # red
-                    elif "TIMEOUT" in job.states:
-                        symbol = "⚠"
-                        text_attr = "warning"  # yellow
-                    elif "CANCELLED" in job.states:
-                        symbol = "⊗"
-                        text_attr = "faded"  # gray
-                    elif {"RUNNING", "COMPLETING"} & job.states:
-                        symbol = "↻"
-                        text_attr = "state_running"  # green
-                    elif "PENDING" in job.states:
-                        symbol = "⋯"
-                        text_attr = "state_pending"  # yellow
-                    else:
-                        # Other states (CONFIGURING, SUSPENDED, etc.)
-                        symbol = "·"
-                        text_attr = "faded"
-
+                symbol = state_icon(primary)
+                text_attr = state_attr(primary)
                 t = f"{symbol} {short_states}"
             elif col == "task_id":
                 # For array children, show task ID
@@ -294,6 +257,23 @@ class SectionHeader(u.WidgetWrap):
     def __init__(self, label):
         cols = u.Columns([('pack', u.Text(f'═══ {label} ')), u.Divider('═')])
         super().__init__(u.AttrMap(cols, 'jobheader'))
+
+
+class SectionBanner(u.WidgetWrap):
+    """Non-selectable full-width banner row inside a scrolling panel.
+
+    Variant of SectionHeader for the in-panel use case (queue/scheduler
+    sub-sections); pads the label to `width` so the 'jobheader' attr fills
+    the row even when the text is short.
+    """
+    def __init__(self, label, width=None):
+        text = f"  {label}"
+        if width:
+            text = text.ljust(max(width, len(text)))
+        super().__init__(u.AttrMap(u.Text(text), 'jobheader'))
+
+    def selectable(self):
+        return False
 
 
 class ExpandableGroupMarker(u.WidgetWrap):
