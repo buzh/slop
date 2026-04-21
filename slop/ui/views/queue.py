@@ -2,16 +2,23 @@
 
 Four sections, top to bottom, mirroring the upward flow of a job:
 
-  1. Recently finished (jobs that vanished from scontrol since the last refresh)
+  1. Recently finished (jobs in a terminal state — CANCELLED/COMPLETED/
+                        FAILED/TIMEOUT/OOM/DEADLINE — or jobs that vanished
+                        from scontrol since the last refresh)
   2. Finishing next    (RUNNING ranked by least time-remaining, plus any
                         COMPLETING/CG epilog jobs pinned to the top)
   3. Recently started  (RUNNING/COMPLETING jobs whose start_time is in the
                         last 15 min)
   4. Starting next     (cluster-wide pending jobs sorted by ETA)
 
-Section 1 is tracker-driven: entries arrive when a job vanishes from scontrol
-and linger until display capacity forces eviction (FIFO). Sections 2, 3, 4
-are recomputed each refresh from the current job set. Section 3 uses
+Section 1 is tracker-driven on two triggers: a job vanishing from scontrol
+(the original signal) AND a job's state entering `job_state_ended`. Slurm
+holds completed records in scontrol for `MinJobAge` (default 5 min) before
+purging them; the state-based trigger lets us surface a finished job
+immediately rather than waiting for that purge. Once tracked, entries
+linger until display capacity forces eviction (FIFO). Sections 2, 3, 4 are
+recomputed each refresh from the current job set, with anything already
+in the ended tracker excluded so it doesn't double-up. Section 3 uses
 `start_time` as the source of truth — earlier versions tried to detect a
 PENDING→RUNNING state transition across two refresh ticks, which silently
 dropped jobs that scheduled fast enough to appear as RUNNING on the very
@@ -33,6 +40,7 @@ from slop.utils import compact_tres
 from slop.ui.constants import EMPTY_PLACEHOLDER
 from slop.ui.widgets import rounded_box, SectionBanner
 from slop.ui.state_style import state_attr, state_short
+from slop.slurm.state import job_state_ended
 from slop.ui.views.queue_helpers import (
     coarse_duration,
     job_priority,
@@ -194,14 +202,25 @@ def _header(layout):
 
 # ----- Widgets ------------------------------------------------------------
 
-class _ReadOnlyRow(u.WidgetWrap):
-    """Base for non-interactive rows in the upper sections."""
+class _JobRow(u.WidgetWrap):
+    """Base for selectable job rows. Subclasses build the inner widget and
+    pass the job id (or snapshot id for ended jobs) to ``__init__`` so the
+    screen-level keypress handler can open JobInfoOverlay on Enter."""
+
+    def __init__(self, w, jobid):
+        self.jobid = jobid
+        super().__init__(w)
 
     def selectable(self):
-        return False
+        return True
+
+    def keypress(self, size, key):
+        # Let the parent Pile / screen handler decide what to do with
+        # everything (including 'enter'); rows themselves are dumb labels.
+        return key
 
 
-class EndedJobWidget(_ReadOnlyRow):
+class EndedJobWidget(_JobRow):
     def __init__(self, snap):
         used_str = (coarse_duration(int(snap['end_ts'] - snap['start_ts']))
                     if snap['end_ts'] and snap['start_ts']
@@ -228,11 +247,14 @@ class EndedJobWidget(_ReadOnlyRow):
             snap.get('nodes') or EMPTY_PLACEHOLDER,
             snap['name'],
         ]
-        super().__init__(u.AttrMap(_row(ENDED_LAYOUT, values),
-                                   state_attr(snap['state'])))
+        super().__init__(
+            u.AttrMap(_row(ENDED_LAYOUT, values),
+                      state_attr(snap['state']), 'normal_selected'),
+            snap['jobid'],
+        )
 
 
-class FinishingJobWidget(_ReadOnlyRow):
+class FinishingJobWidget(_JobRow):
     def __init__(self, job):
         end_ts = ts(getattr(job, 'end_time', {}))
         start_ts = ts(getattr(job, 'start_time', {}))
@@ -266,10 +288,13 @@ class FinishingJobWidget(_ReadOnlyRow):
             attr = 'warning'
         else:
             attr = 'normal'
-        super().__init__(u.AttrMap(_row(FINISHING_LAYOUT, values), attr))
+        super().__init__(
+            u.AttrMap(_row(FINISHING_LAYOUT, values), attr, 'normal_selected'),
+            job.job_id,
+        )
 
 
-class StartedJobWidget(_ReadOnlyRow):
+class StartedJobWidget(_JobRow):
     def __init__(self, job):
         now = time.time()
         start_ts = ts(getattr(job, 'start_time', {}))
@@ -293,13 +318,17 @@ class StartedJobWidget(_ReadOnlyRow):
             getattr(job, 'nodes', '') or EMPTY_PLACEHOLDER,
             getattr(job, 'name', EMPTY_PLACEHOLDER) or EMPTY_PLACEHOLDER,
         ]
-        super().__init__(u.AttrMap(_row(STARTED_LAYOUT, values),
-                                   state_attr(state)))
+        super().__init__(
+            u.AttrMap(_row(STARTED_LAYOUT, values),
+                      state_attr(state), 'normal_selected'),
+            job.job_id,
+        )
 
 
-class AboutToStartJobWidget(_ReadOnlyRow):
-    """Read-only row for a pending job in the bottom (starting-next) section.
-    Cluster-wide, sorted by ETA. F8 has the full interactive pending list."""
+class AboutToStartJobWidget(_JobRow):
+    """Selectable row for a pending job in the bottom (starting-next)
+    section. Cluster-wide, sorted by ETA. F8 has the full interactive
+    pending list with grouping."""
 
     def __init__(self, job):
         diff = eta_seconds(getattr(job, 'start_time', {}))
@@ -321,7 +350,10 @@ class AboutToStartJobWidget(_ReadOnlyRow):
             attr = 'success'
         else:
             attr = reason_attr(reason)
-        super().__init__(u.AttrMap(_row(ABOUT_LAYOUT, values), attr))
+        super().__init__(
+            u.AttrMap(_row(ABOUT_LAYOUT, values), attr, 'normal_selected'),
+            job.job_id,
+        )
 
 
 # ----- Screen -------------------------------------------------------------
@@ -347,6 +379,14 @@ class ScreenViewQueue(u.WidgetWrap):
         #                  last-known snapshots when jobs vanish from scontrol.
         self.ended_tracker = {}
         self.prev_jobs_by_id = {}
+
+        # Focus persistence across re-renders. The 3-second refresh tick
+        # rebuilds every row widget; without snapshotting the user's
+        # selection the cursor would jump back to the default each tick.
+        # Default to the bottom section ("Starting next") since that's
+        # where the user usually browses.
+        self.focused_section = 3
+        self.focused_jobid_by_section = {}
 
         # All four sections re-built each render. Each pile carries its own
         # weight spacer so it's always a box widget and the outer Pile can
@@ -416,7 +456,22 @@ class ScreenViewQueue(u.WidgetWrap):
         now_mono = time.monotonic()
         current_by_id = {j.job_id: j for j in self.jobs.jobs}
 
-        # Vanished from scontrol: present last tick, gone now → ended.
+        # Trigger 1: job is in a terminal state (CANCELLED/COMPLETED/FAILED/
+        # TIMEOUT/OOM/DEADLINE) but still present in scontrol. Slurm holds
+        # finished records for MinJobAge (default 300s) before purging; we
+        # don't want to wait that long to call a job done. Snapshot from the
+        # live Job — its end_time is already populated with the real wall
+        # time of completion.
+        for jid, job in current_by_id.items():
+            if jid in self.ended_tracker:
+                continue
+            states = getattr(job, 'job_state', None) or []
+            if any(s in job_state_ended for s in states):
+                self.ended_tracker[jid] = (_snapshot_job(job), now_mono)
+
+        # Trigger 2: job vanished from scontrol entirely without us catching
+        # it in a terminal state first (e.g. very short-lived, or we missed
+        # the transition between refreshes). Snapshot from the previous tick.
         for jid, prev in self.prev_jobs_by_id.items():
             if jid in current_by_id or jid in self.ended_tracker:
                 continue
@@ -450,6 +505,7 @@ class ScreenViewQueue(u.WidgetWrap):
         self._render_finishing_section(width, finish_cap)
         self._render_started_section(width, started_cap)
         self._render_about_section(width, about_cap)
+        self._restore_focus()
 
     def _set_section_contents(self, section_pile, top_widgets, row_widgets):
         """Pack `top_widgets` (title + col header + any info text) at the
@@ -489,6 +545,12 @@ class ScreenViewQueue(u.WidgetWrap):
         now = time.time()
         candidates = []
         for j in self.jobs.jobs:
+            # Already surfaced in Recently Finished — don't show twice.
+            # A job can be both COMPLETING and CANCELLED in the same state
+            # list (cancellation kicked in mid-cleanup); the ended tracker
+            # has captured it, so skip it here.
+            if j.job_id in self.ended_tracker:
+                continue
             states = getattr(j, 'job_state', None) or []
             is_running = 'RUNNING' in states
             is_completing = 'COMPLETING' in states
@@ -537,6 +599,10 @@ class ScreenViewQueue(u.WidgetWrap):
         candidates = []
         for j in self.jobs.jobs:
             if j.job_id in skip:
+                continue
+            # Same dedup as in Finishing Next: a job already shown in
+            # Recently Finished shouldn't reappear in this section.
+            if j.job_id in self.ended_tracker:
                 continue
             if not _is_just_started(j, now):
                 continue
@@ -598,3 +664,98 @@ class ScreenViewQueue(u.WidgetWrap):
             rows = [AboutToStartJobWidget(job)
                     for job in (ordered[:cap] if cap else [])]
         self._set_section_contents(self.about_section, top, rows)
+
+    # --- Focus / keypress --------------------------------------------------
+
+    def _section_piles(self):
+        """The four section piles in display order, mirroring SECTION_WEIGHTS."""
+        return (self.ended_section, self.finishing_section,
+                self.started_section, self.about_section)
+
+    def _capture_focus(self):
+        """Snapshot which section + which job is selected so that the next
+        re-render can restore focus to the same place."""
+        try:
+            section_idx = self.outer_pile.focus_position
+        except (IndexError, AttributeError):
+            return
+        self.focused_section = section_idx
+        section_pile = self._section_piles()[section_idx]
+        focused = section_pile.focus
+        jobid = getattr(focused, 'jobid', None) if focused is not None else None
+        self.focused_jobid_by_section[section_idx] = jobid
+
+    def _restore_focus(self):
+        """Snap focus back to the saved section/job after re-rendering.
+        If the previously-focused job is gone, fall back to the bottom-most
+        (newest) selectable row in the section — matches the conveyor-belt
+        intuition of "fresh entries arrive at the bottom"."""
+        sections = self._section_piles()
+        n = len(sections)
+        section_idx = max(0, min(self.focused_section, n - 1))
+        # Skip empty sections by walking outward; if everything's empty we
+        # just leave focus where Pile defaults it.
+        for offset in range(n):
+            for direction in (0, -1, 1):
+                if direction == 0 and offset > 0:
+                    continue
+                idx = section_idx + direction * offset
+                if not (0 <= idx < n):
+                    continue
+                if self._focus_section(sections[idx], idx):
+                    try:
+                        self.outer_pile.focus_position = idx
+                    except (IndexError, ValueError):
+                        pass
+                    return
+
+    def _focus_section(self, section_pile, section_idx):
+        """Try to focus a row inside `section_pile`. Returns True if any
+        selectable row was found (and focused)."""
+        target_jid = self.focused_jobid_by_section.get(section_idx)
+        last_selectable = None
+        for i, (w, _opts) in enumerate(section_pile.contents):
+            try:
+                sel = w.selectable()
+            except Exception:
+                sel = False
+            if not sel:
+                continue
+            last_selectable = i
+            if target_jid is not None and getattr(w, 'jobid', None) == target_jid:
+                section_pile.focus_position = i
+                return True
+        if last_selectable is not None:
+            section_pile.focus_position = last_selectable
+            return True
+        return False
+
+    def _focused_jobid(self):
+        try:
+            section_idx = self.outer_pile.focus_position
+        except (IndexError, AttributeError):
+            return None
+        focused = self._section_piles()[section_idx].focus
+        return getattr(focused, 'jobid', None) if focused is not None else None
+
+    def _open_job_info(self, jobid):
+        from slop.ui.overlays import JobInfoOverlay
+        job = self.jobs.job_index.get(jobid)
+        if job is None:
+            # Ended jobs have already vanished from scontrol; the snapshot
+            # row stays selectable so the cursor doesn't trip over a dead
+            # zone, but there's no live Job to hand to the overlay.
+            return
+        self.main_screen.open_overlay(JobInfoOverlay(job, self.main_screen))
+
+    def keypress(self, size, key):
+        if self.main_screen.overlay_showing:
+            return key
+        if key == 'enter':
+            jid = self._focused_jobid()
+            if jid is not None:
+                self._open_job_info(jid)
+                return None
+        result = super().keypress(size, key)
+        self._capture_focus()
+        return result
