@@ -724,8 +724,14 @@ class ScreenViewQueue(u.WidgetWrap):
 
         Just a preview — the full interactive pending list lives in F8.
         """
+        now_wall = time.time()
         pending_with_eta = []
         pending_without = []
+        # Collect headline stats in the same pass over the pending list:
+        # requested time limit (what the user asked for) and current wait
+        # (how long the job has been sitting in PENDING so far).
+        time_limits = []
+        waits = []
         for job in self.jobs.jobs:
             if 'PENDING' not in (getattr(job, 'job_state', None) or []):
                 continue
@@ -734,13 +740,25 @@ class ScreenViewQueue(u.WidgetWrap):
                 pending_without.append(job)
             else:
                 pending_with_eta.append((diff, job))
+            tl = getattr(job, 'time_limit', {})
+            if isinstance(tl, dict) and tl.get('set'):
+                time_limits.append(tl.get('number', 0) * 60)
+            submit_ts = ts(getattr(job, 'submit_time', {}))
+            if submit_ts > 0:
+                waits.append(max(0, now_wall - submit_ts))
         pending_with_eta.sort(key=lambda x: x[0])
 
         total_pending = len(pending_with_eta) + len(pending_without)
         # Title carries the queue depth — unlike the upper sections, the
         # total count of pending jobs is genuine information (not just the
-        # number of rows that fit).
-        title = SectionBanner(f"Starting next  ({total_pending} pending)",
+        # number of rows that fit). Append avg requested runtime and avg
+        # current wait so the header doubles as a queue-health summary.
+        parts = [f"{total_pending} pending"]
+        if time_limits:
+            parts.append(f"avg time {coarse_duration(int(sum(time_limits) / len(time_limits)))}")
+        if waits:
+            parts.append(f"avg waiting {coarse_duration(int(sum(waits) / len(waits)))}")
+        title = SectionBanner(f"Starting next  ({', '.join(parts)})",
                               width=width)
         col_header = u.AttrMap(_header(ABOUT_LAYOUT), 'faded')
         top = [title, col_header]
