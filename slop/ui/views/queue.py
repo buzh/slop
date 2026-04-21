@@ -290,23 +290,11 @@ class StartedJobWidget(_ReadOnlyRow):
                                    state_attr(state)))
 
 
-class AboutToStartJobWidget(u.WidgetWrap):
-    """Selectable row for a pending job in the bottom (starting-next) section.
-    Cluster-wide, sorted by ETA, partition column visible."""
+class AboutToStartJobWidget(_ReadOnlyRow):
+    """Read-only row for a pending job in the bottom (starting-next) section.
+    Cluster-wide, sorted by ETA. F8 has the full interactive pending list."""
 
     def __init__(self, job):
-        self.job = job
-        self.jobid = job.job_id
-        super().__init__(self._build())
-
-    def selectable(self):
-        return True
-
-    def keypress(self, size, key):
-        return key
-
-    def _build(self):
-        job = self.job
         diff = eta_seconds(getattr(job, 'start_time', {}))
         eta = format_eta_seconds(diff)
         priority = job_priority(job)
@@ -326,7 +314,7 @@ class AboutToStartJobWidget(u.WidgetWrap):
             attr = 'success'
         else:
             attr = reason_attr(reason)
-        return u.AttrMap(_row(ABOUT_LAYOUT, values), attr, 'normal_selected')
+        super().__init__(u.AttrMap(_row(ABOUT_LAYOUT, values), attr))
 
 
 # ----- Screen -------------------------------------------------------------
@@ -335,7 +323,10 @@ class ScreenViewQueue(u.WidgetWrap):
     """Lifecycle flow: recently finished → finishing next → recently started → starting next."""
 
     # Vertical weights for the four sections (ended, finishing, started, about).
-    SECTION_WEIGHTS = (15, 15, 15, 55)
+    # Equal split — the bottom section is now a static top-of-pending preview,
+    # not a scrolling walker, so it doesn't need extra space. Use F8 for the
+    # full interactive pending list.
+    SECTION_WEIGHTS = (1, 1, 1, 1)
     # Per-section overhead (title row + column-header row).
     TRACKER_OVERHEAD = 2
 
@@ -350,29 +341,13 @@ class ScreenViewQueue(u.WidgetWrap):
         self.ended_tracker = {}
         self.prev_jobs_by_id = {}
 
-        # Bottom section: cluster-wide pending jobs sorted by ETA.
-        self.selected_jobid = None
-
-        # Top three sections: re-built each render. Wrap each in a Filler so
+        # All four sections re-built each render. Wrap each in a Filler so
         # the outer Pile can give them a weighted height (Pile-of-packs is a
         # flow widget; weight needs box).
         self.ended_section = u.Pile([u.Text("")])
         self.finishing_section = u.Pile([u.Text("")])
         self.started_section = u.Pile([u.Text("")])
-
-        # Bottom section uses a ListBox so the user can scroll past whatever
-        # fits in the allotted height.
-        self.about_summary = u.Text("")
-        self.about_col_header = u.AttrMap(_header(ABOUT_LAYOUT), 'jobheader')
-        self.about_walker = u.SimpleFocusListWalker([])
-        self.about_listbox = u.ListBox(self.about_walker)
-        about_section = u.Pile([
-            ('pack', self.about_summary),
-            ('pack', u.Divider("─")),
-            ('pack', self.about_col_header),
-            ('pack', u.Divider("─")),
-            u.ScrollBar(self.about_listbox),
-        ])
+        self.about_section = u.Pile([u.Text("")])
 
         outer = u.Pile([
             ('weight', self.SECTION_WEIGHTS[0],
@@ -381,8 +356,9 @@ class ScreenViewQueue(u.WidgetWrap):
              u.Filler(self.finishing_section, valign='top')),
             ('weight', self.SECTION_WEIGHTS[2],
              u.Filler(self.started_section, valign='top')),
-            ('weight', self.SECTION_WEIGHTS[3], about_section),
-        ], focus_item=3)
+            ('weight', self.SECTION_WEIGHTS[3],
+             u.Filler(self.about_section, valign='top')),
+        ])
         self.outer_pile = outer
 
         self.container = rounded_box(outer, title='Queue Status - Job Lifecycle Flow')
@@ -418,16 +394,13 @@ class ScreenViewQueue(u.WidgetWrap):
     # --- Tracker bookkeeping -----------------------------------------------
 
     def _section_capacities(self):
-        """Approximate row-count budget for each tracker section."""
+        """Approximate row-count budget for each section (ended, finishing,
+        started, about)."""
         total = max(0, getattr(self.main_screen, 'height', 30) - 2)
         weight_total = sum(self.SECTION_WEIGHTS)
-        ended_h = int(total * self.SECTION_WEIGHTS[0] / weight_total)
-        finish_h = int(total * self.SECTION_WEIGHTS[1] / weight_total)
-        start_h = int(total * self.SECTION_WEIGHTS[2] / weight_total)
-        return (
-            max(0, ended_h - self.TRACKER_OVERHEAD),
-            max(0, finish_h - self.TRACKER_OVERHEAD),
-            max(0, start_h - self.TRACKER_OVERHEAD),
+        return tuple(
+            max(0, int(total * w / weight_total) - self.TRACKER_OVERHEAD)
+            for w in self.SECTION_WEIGHTS
         )
 
     def _update_trackers(self):
@@ -441,7 +414,7 @@ class ScreenViewQueue(u.WidgetWrap):
             self.ended_tracker[jid] = (_snapshot_job(prev), now_mono)
 
         # Capacity-driven eviction (FIFO — oldest entries leave first).
-        ended_cap, _, _ = self._section_capacities()
+        ended_cap = self._section_capacities()[0]
         self.ended_tracker = self._cap_dict(self.ended_tracker, ended_cap)
 
         self.prev_jobs_by_id = current_by_id
@@ -462,12 +435,12 @@ class ScreenViewQueue(u.WidgetWrap):
 
     def _render(self):
         width = self._width()
-        ended_cap, finish_cap, started_cap = self._section_capacities()
+        ended_cap, finish_cap, started_cap, about_cap = self._section_capacities()
 
         self._render_ended_section(width, ended_cap)
         self._render_finishing_section(width, finish_cap)
         self._render_started_section(width, started_cap)
-        self._render_about_section(width)
+        self._render_about_section(width, about_cap)
 
     def _set_section_contents(self, section_pile, widgets):
         section_pile.contents = [(w, ('pack', None)) for w in widgets]
@@ -566,10 +539,11 @@ class ScreenViewQueue(u.WidgetWrap):
                 body.append(StartedJobWidget(job))
         self._set_section_contents(self.started_section, body)
 
-    def _render_about_section(self, width):
-        """Cross-partition pending jobs sorted by ETA (soonest first)."""
-        self.about_walker.clear()
+    def _render_about_section(self, width, cap):
+        """Top of the cluster-wide pending list, sorted by ETA (soonest first).
 
+        Just a preview — the full interactive pending list lives in F8.
+        """
         pending_with_eta = []
         pending_without = []
         for job in self.jobs.jobs:
@@ -583,63 +557,19 @@ class ScreenViewQueue(u.WidgetWrap):
         pending_with_eta.sort(key=lambda x: x[0])
 
         total_pending = len(pending_with_eta) + len(pending_without)
-        soonest = ''
-        if pending_with_eta:
-            soonest_diff = pending_with_eta[0][0]
-            soonest = f'   soonest: {format_eta_seconds(soonest_diff)}'
-        self.about_summary.set_text([
-            ('jobheader', '  '),
-            ('jobheader', f'Starting next: {len(pending_with_eta)}'),
-            f'   no ETA: {len(pending_without)}',
-            f'   total pending: {total_pending}',
-            soonest,
-        ])
+        # Title carries the queue depth — unlike the upper sections, the
+        # total count of pending jobs is genuine information (not just the
+        # number of rows that fit).
+        title = SectionBanner(f"Starting next  ({total_pending} pending)",
+                              width=width)
+        col_header = u.AttrMap(_header(ABOUT_LAYOUT), 'faded')
+        body = [title, col_header]
 
-        widgets = []
         if not pending_with_eta and not pending_without:
-            widgets.append(u.Text(("faded", "  No pending jobs in the queue")))
+            body.append(u.Text(("faded", "  (no pending jobs in the queue)")))
         else:
-            # ETA-known first (sorted by soonest), then unknowns at the end so
-            # the user can still drill into them.
-            for _, job in pending_with_eta:
-                widgets.append(AboutToStartJobWidget(job))
-            for job in pending_without:
-                widgets.append(AboutToStartJobWidget(job))
-
-        self.about_walker.extend(widgets)
-        self._restore_about_focus()
-
-    # --- Focus / keypress (starting-next section) --------------------------
-
-    def _restore_about_focus(self):
-        if not len(self.about_walker):
-            return
-        if self.selected_jobid is not None:
-            for i, w in enumerate(self.about_walker):
-                if getattr(w, 'jobid', None) == self.selected_jobid:
-                    self.about_walker.set_focus(i)
-                    return
-        self.about_walker.set_focus(0)
-
-    def _capture_about_focus(self):
-        focus_w, _ = self.about_listbox.get_focus()
-        if focus_w is None:
-            return
-        self.selected_jobid = getattr(focus_w, 'jobid', None)
-
-    def keypress(self, size, key):
-        if self.main_screen.overlay_showing:
-            return key
-
-        focus_w, _ = self.about_listbox.get_focus()
-
-        if key == 'enter' and focus_w is not None and hasattr(focus_w, 'jobid'):
-            from slop.ui.overlays import JobInfoOverlay
-            job = self.jobs.job_index.get(focus_w.jobid)
-            if job:
-                self.main_screen.open_overlay(JobInfoOverlay(job, self.main_screen))
-            return None
-
-        result = super().keypress(size, key)
-        self._capture_about_focus()
-        return result
+            # ETA-known first (sorted by soonest), then unknowns at the end.
+            ordered = [j for _, j in pending_with_eta] + pending_without
+            for job in ordered[:cap] if cap else []:
+                body.append(AboutToStartJobWidget(job))
+        self._set_section_contents(self.about_section, body)
