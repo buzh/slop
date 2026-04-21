@@ -3,7 +3,8 @@
 Four sections, top to bottom, mirroring the upward flow of a job:
 
   1. Just ended       (jobs that vanished from scontrol since the last refresh)
-  2. Finishing soon   (running jobs ranked by least time-remaining)
+  2. Finishing soon   (RUNNING ranked by least time-remaining, plus any
+                       COMPLETING/CG epilog jobs pinned to the top)
   3. Just started     (RUNNING/COMPLETING jobs whose start_time is in the
                        last 15 min)
   4. About to start   (cluster-wide pending jobs sorted by ETA)
@@ -184,11 +185,17 @@ class FinishingJobWidget(_ReadOnlyRow):
         end_ts = ts(getattr(job, 'end_time', {}))
         start_ts = ts(getattr(job, 'start_time', {}))
         now = time.time()
-        remaining = (coarse_duration(int(end_ts - now))
-                     if end_ts > now else EMPTY_PLACEHOLDER)
+        states = getattr(job, 'job_state', None) or []
+        is_completing = 'COMPLETING' in states
+        if is_completing:
+            remaining = 'wrapping up'
+        elif end_ts > now:
+            remaining = coarse_duration(int(end_ts - now))
+        else:
+            remaining = EMPTY_PLACEHOLDER
         ran = (coarse_duration(int(now - start_ts))
                if start_ts and now >= start_ts else EMPTY_PLACEHOLDER)
-        state = job.job_state[0] if getattr(job, 'job_state', None) else 'R'
+        state = states[0] if states else 'R'
         text = _format_finishing_row(
             width,
             state=state_short(state),
@@ -200,8 +207,12 @@ class FinishingJobWidget(_ReadOnlyRow):
             resources=(compact_tres(job) or EMPTY_PLACEHOLDER)[:18],
             name=str(getattr(job, 'name', EMPTY_PLACEHOLDER) or EMPTY_PLACEHOLDER)[:25],
         )
-        # Warning attr if <5 min remaining, else normal.
-        attr = 'warning' if (end_ts and end_ts - now < 300) else 'normal'
+        # COMPLETING (epilog/cleanup) and <5 min remaining both get warning;
+        # everything else stays neutral.
+        if is_completing or (end_ts and end_ts - now < 300):
+            attr = 'warning'
+        else:
+            attr = 'normal'
         super().__init__(u.AttrMap(u.Text(text), attr))
 
 
@@ -438,10 +449,18 @@ class ScreenViewQueue(u.WidgetWrap):
         now = time.time()
         candidates = []
         for j in self.jobs.jobs:
-            if 'RUNNING' not in (getattr(j, 'job_state', None) or []):
+            states = getattr(j, 'job_state', None) or []
+            is_running = 'RUNNING' in states
+            is_completing = 'COMPLETING' in states
+            if not (is_running or is_completing):
                 continue
             if _is_just_started(j, now):
                 continue  # already shown in the "Just started" section
+            if is_completing:
+                # Epilog/cleanup — sort to the very top of the section since
+                # they're the closest to vanishing into "Just ended".
+                candidates.append((-1, j))
+                continue
             end_ts = ts(getattr(j, 'end_time', {}))
             if end_ts <= 0:
                 continue
