@@ -65,6 +65,10 @@ STARTED_MAX_AGE = 15 * 60
 # ahead of the host's wall clock; without this tolerance the job is rejected
 # from "Recently started" and silently falls into "Finishing next".
 STARTED_FUTURE_TOLERANCE = 5 * 60
+# Window over which the "Recently finished" section accumulates summary
+# stats. Independent of the display row count so we can summarize a longer
+# span than fits on screen.
+ENDED_STATS_WINDOW = 60 * 60
 
 
 # ----- Lifecycle helpers --------------------------------------------------
@@ -383,9 +387,16 @@ class ScreenViewQueue(u.WidgetWrap):
 
         # Lifecycle trackers.
         # ended_tracker:   {jobid: (snap, monotonic_ts_when_noticed_gone)}
+        #                  Bounded by display row count — drives the rows
+        #                  shown in the "Recently finished" section.
+        # ended_stats:     {jobid: snap}
+        #                  Same snapshots, but pruned by age (ENDED_STATS_
+        #                  WINDOW) instead of by row count. Drives the
+        #                  one-line summary above the rows.
         # prev_jobs_by_id: jobid -> Job from last refresh, used to capture
         #                  last-known snapshots when jobs vanish from scontrol.
         self.ended_tracker = {}
+        self.ended_stats = {}
         self.prev_jobs_by_id = {}
 
         # Focus persistence across re-renders. The 3-second refresh tick
@@ -462,11 +473,20 @@ class ScreenViewQueue(u.WidgetWrap):
 
     def _update_trackers(self):
         now_mono = time.monotonic()
+        now_wall = time.time()
         current_by_id = {j.job_id: j for j in self.jobs.jobs}
 
         def _is_terminal(job):
             states = getattr(job, 'job_state', None) or []
             return any(s in job_state_ended for s in states)
+
+        def _record(jid, snap):
+            """Add to both display tracker and stats dict; cheap to call
+            twice for the same jid since both checks are dict membership."""
+            if jid not in self.ended_tracker:
+                self.ended_tracker[jid] = (snap, now_mono)
+            if jid not in self.ended_stats:
+                self.ended_stats[jid] = snap
 
         # Trigger 1: job's state transitioned from non-terminal to terminal
         # during this tick. We require the previous tick's snapshot to have
@@ -477,14 +497,12 @@ class ScreenViewQueue(u.WidgetWrap):
         # started. The conveyor belt is "things that just happened", so we
         # only put jobs on it when we actually witnessed the transition.
         for jid, job in current_by_id.items():
-            if jid in self.ended_tracker:
-                continue
             if not _is_terminal(job):
                 continue
             prev = self.prev_jobs_by_id.get(jid)
             if prev is None or _is_terminal(prev):
                 continue
-            self.ended_tracker[jid] = (_snapshot_job(job), now_mono)
+            _record(jid, _snapshot_job(job))
 
         # Trigger 2: job vanished from scontrol entirely without us first
         # catching it in a terminal state (e.g. very short-lived, or the
@@ -492,15 +510,22 @@ class ScreenViewQueue(u.WidgetWrap):
         # caveat: if the previous tick already had it as terminal, it was
         # already done before we started watching — don't surface it now.
         for jid, prev in self.prev_jobs_by_id.items():
-            if jid in current_by_id or jid in self.ended_tracker:
+            if jid in current_by_id:
                 continue
             if _is_terminal(prev):
                 continue
-            self.ended_tracker[jid] = (_snapshot_job(prev), now_mono)
+            _record(jid, _snapshot_job(prev))
 
-        # Capacity-driven eviction (FIFO — oldest entries leave first).
+        # Capacity-driven eviction for the display tracker (FIFO — oldest
+        # entries leave first when the section is full).
         ended_cap = self._section_capacities()[0]
         self.ended_tracker = self._cap_dict(self.ended_tracker, ended_cap)
+
+        # Time-driven eviction for the stats dict — keep anything that ended
+        # within the last ENDED_STATS_WINDOW seconds.
+        cutoff = now_wall - ENDED_STATS_WINDOW
+        self.ended_stats = {jid: snap for jid, snap in self.ended_stats.items()
+                            if snap.get('end_ts', 0) >= cutoff}
 
         self.prev_jobs_by_id = current_by_id
 
@@ -538,6 +563,37 @@ class ScreenViewQueue(u.WidgetWrap):
         contents.extend((w, ('pack', None)) for w in row_widgets)
         section_pile.contents = contents
 
+    def _ended_stats_text(self):
+        """One-line summary of jobs in the stats window, or None if empty.
+
+        The window length is computed from the actual data (oldest end_ts)
+        so we don't lie about the time span before we've been running long
+        enough to fill it.
+        """
+        snaps = [s for s in self.ended_stats.values() if s.get('end_ts', 0) > 0]
+        if not snaps:
+            return None
+        span = int(time.time() - min(s['end_ts'] for s in snaps))
+        # Floor at 1s so coarse_duration always returns something readable.
+        span_str = coarse_duration(max(1, span))
+
+        completed = sum(1 for s in snaps if s.get('state') == 'COMPLETED')
+        failed = len(snaps) - completed
+
+        runtimes = [s['end_ts'] - s['start_ts'] for s in snaps
+                    if s.get('start_ts', 0) > 0
+                    and s['end_ts'] >= s['start_ts']]
+        waits = [s['start_ts'] - s['submit_ts'] for s in snaps
+                 if s.get('start_ts', 0) > 0 and s.get('submit_ts', 0) > 0
+                 and s['start_ts'] >= s['submit_ts']]
+
+        parts = [f"{completed} completed", f"{failed} failed"]
+        if runtimes:
+            parts.append(f"avg runtime {coarse_duration(int(sum(runtimes) / len(runtimes)))}")
+        if waits:
+            parts.append(f"avg wait {coarse_duration(int(sum(waits) / len(waits)))}")
+        return f"Last {span_str}: " + ", ".join(parts)
+
     def _render_ended_section(self, width, cap):
         # Sort by the job's own end_time (ascending), then keep the newest cap
         # entries. Display order is oldest-at-top / newest-at-bottom — the
@@ -554,7 +610,11 @@ class ScreenViewQueue(u.WidgetWrap):
         # is whatever fits, same as the other dynamic sections.
         title = SectionBanner("Recently finished", width=width)
         col_header = u.AttrMap(_header(ENDED_LAYOUT), 'faded')
-        top = [title, col_header]
+        top = [title]
+        stats = self._ended_stats_text()
+        if stats:
+            top.append(u.Text(("faded", "  " + stats)))
+        top.append(col_header)
         if not items:
             top.append(u.Text(("faded", "  (no jobs have finished since the view opened)")))
             rows = []
