@@ -420,7 +420,10 @@ class ScreenViewQueue(u.WidgetWrap):
         section_pile.contents = [(w, ('pack', None)) for w in widgets]
 
     def _render_ended_section(self, width, cap):
-        items = sorted(self.ended_tracker.values(), key=lambda v: v[1], reverse=True)
+        # Oldest end at the top, freshest at the bottom — same upward "flow"
+        # as the rest of the view: jobs bubble up from "Finishing soon" into
+        # the bottom of this section and drift up before being evicted.
+        items = sorted(self.ended_tracker.values(), key=lambda v: v[1])
         title = SectionBanner(f"Just ended  ({len(items)})", width=width)
         col_header = u.AttrMap(u.Text(_ended_header(width)), 'faded')
         body = [title, col_header]
@@ -466,7 +469,9 @@ class ScreenViewQueue(u.WidgetWrap):
                 continue
             start_ts = ts(getattr(j, 'start_time', {}))
             candidates.append((start_ts, j))
-        candidates.sort(key=lambda x: -x[0])  # newest start first
+        # Oldest start at the top, newest at the bottom — matches the upward
+        # "flow" of the view (freshly-started jobs bubble up from pending).
+        candidates.sort(key=lambda x: x[0])
 
         title = SectionBanner(f"Just started  ({len(candidates)})", width=width)
         col_header = u.AttrMap(u.Text(_started_header(width)), 'faded')
