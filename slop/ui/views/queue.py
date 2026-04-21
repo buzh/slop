@@ -614,15 +614,16 @@ class ScreenViewQueue(u.WidgetWrap):
         if cap:
             items = items[-cap:]
 
-        # No count in the title: it's the "most recently finished N" where N
-        # is whatever fits, same as the other dynamic sections.
-        title = SectionBanner("Recently finished", width=width)
-        col_header = u.AttrMap(_header(ENDED_LAYOUT), 'faded')
-        top = [title]
+        # Stats summary lives in the banner alongside the title — same
+        # pattern as "Starting next  (192 pending)". Promotes the summary
+        # to the section header instead of an extra line below it.
         stats = self._ended_stats_text()
+        title_text = "Recently finished"
         if stats:
-            top.append(u.Text(("faded", "  " + stats)))
-        top.append(col_header)
+            title_text = f"{title_text}  ({stats})"
+        title = SectionBanner(title_text, width=width)
+        col_header = u.AttrMap(_header(ENDED_LAYOUT), 'faded')
+        top = [title, col_header]
         if not items:
             top.append(u.Text(("faded", "  (no jobs have finished since the view opened)")))
             rows = []
