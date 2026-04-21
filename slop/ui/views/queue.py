@@ -341,23 +341,25 @@ class ScreenViewQueue(u.WidgetWrap):
         self.ended_tracker = {}
         self.prev_jobs_by_id = {}
 
-        # All four sections re-built each render. Wrap each in a Filler so
-        # the outer Pile can give them a weighted height (Pile-of-packs is a
-        # flow widget; weight needs box).
-        self.ended_section = u.Pile([u.Text("")])
-        self.finishing_section = u.Pile([u.Text("")])
-        self.started_section = u.Pile([u.Text("")])
-        self.about_section = u.Pile([u.Text("")])
+        # All four sections re-built each render. Each pile carries its own
+        # weight spacer so it's always a box widget and the outer Pile can
+        # give it a weighted height directly. The spacer also pushes job
+        # rows down to the bottom of the section — conveyor-belt flow: a
+        # newly-arrived row appears at the bottom and drifts up as more
+        # rows accumulate behind it.
+        def _empty_pile():
+            return u.Pile([('weight', 1, u.SolidFill(' '))])
+
+        self.ended_section = _empty_pile()
+        self.finishing_section = _empty_pile()
+        self.started_section = _empty_pile()
+        self.about_section = _empty_pile()
 
         outer = u.Pile([
-            ('weight', self.SECTION_WEIGHTS[0],
-             u.Filler(self.ended_section, valign='top')),
-            ('weight', self.SECTION_WEIGHTS[1],
-             u.Filler(self.finishing_section, valign='top')),
-            ('weight', self.SECTION_WEIGHTS[2],
-             u.Filler(self.started_section, valign='top')),
-            ('weight', self.SECTION_WEIGHTS[3],
-             u.Filler(self.about_section, valign='top')),
+            ('weight', self.SECTION_WEIGHTS[0], self.ended_section),
+            ('weight', self.SECTION_WEIGHTS[1], self.finishing_section),
+            ('weight', self.SECTION_WEIGHTS[2], self.started_section),
+            ('weight', self.SECTION_WEIGHTS[3], self.about_section),
         ])
         self.outer_pile = outer
 
@@ -442,8 +444,15 @@ class ScreenViewQueue(u.WidgetWrap):
         self._render_started_section(width, started_cap)
         self._render_about_section(width, about_cap)
 
-    def _set_section_contents(self, section_pile, widgets):
-        section_pile.contents = [(w, ('pack', None)) for w in widgets]
+    def _set_section_contents(self, section_pile, top_widgets, row_widgets):
+        """Pack `top_widgets` (title + col header + any info text) at the
+        top, then pin `row_widgets` (job rows) to the bottom via a weight
+        spacer in between. Conveyor-belt flow: newest entries appear at
+        the very bottom of the section and drift up as more accumulate."""
+        contents = [(w, ('pack', None)) for w in top_widgets]
+        contents.append((u.SolidFill(' '), ('weight', 1)))
+        contents.extend((w, ('pack', None)) for w in row_widgets)
+        section_pile.contents = contents
 
     def _render_ended_section(self, width, cap):
         # Sort by the job's own end_time (ascending), then keep the newest cap
@@ -461,13 +470,13 @@ class ScreenViewQueue(u.WidgetWrap):
         # is whatever fits, same as the other dynamic sections.
         title = SectionBanner("Recently finished", width=width)
         col_header = u.AttrMap(_header(ENDED_LAYOUT), 'faded')
-        body = [title, col_header]
+        top = [title, col_header]
         if not items:
-            body.append(u.Text(("faded", "  (no jobs have finished since the view opened)")))
+            top.append(u.Text(("faded", "  (no jobs have finished since the view opened)")))
+            rows = []
         else:
-            for snap, _ts_seen in items:
-                body.append(EndedJobWidget(snap))
-        self._set_section_contents(self.ended_section, body)
+            rows = [EndedJobWidget(snap) for snap, _ts_seen in items]
+        self._set_section_contents(self.ended_section, top, rows)
 
     def _render_finishing_section(self, width, cap):
         now = time.time()
@@ -502,13 +511,14 @@ class ScreenViewQueue(u.WidgetWrap):
         # of running jobs would just be misleading.
         title = SectionBanner("Finishing next", width=width)
         col_header = u.AttrMap(_header(FINISHING_LAYOUT), 'faded')
-        body = [title, col_header]
+        top = [title, col_header]
         if not candidates:
-            body.append(u.Text(("faded", "  (no running jobs with a known end time)")))
+            top.append(u.Text(("faded", "  (no running jobs with a known end time)")))
+            rows = []
         else:
-            for _, job in candidates[:cap] if cap else []:
-                body.append(FinishingJobWidget(job))
-        self._set_section_contents(self.finishing_section, body)
+            rows = [FinishingJobWidget(job)
+                    for _, job in (candidates[:cap] if cap else [])]
+        self._set_section_contents(self.finishing_section, top, rows)
 
     def _render_started_section(self, width, cap):
         now = time.time()
@@ -530,14 +540,14 @@ class ScreenViewQueue(u.WidgetWrap):
         # started N jobs" where N is whatever fits in the window.
         title = SectionBanner("Recently started", width=width)
         col_header = u.AttrMap(_header(STARTED_LAYOUT), 'faded')
-        body = [title, col_header]
+        top = [title, col_header]
         if not candidates:
-            body.append(u.Text(
+            top.append(u.Text(
                 ("faded", "  (no jobs have started in the last 15 minutes)")))
+            rows = []
         else:
-            for _, job in candidates:
-                body.append(StartedJobWidget(job))
-        self._set_section_contents(self.started_section, body)
+            rows = [StartedJobWidget(job) for _, job in candidates]
+        self._set_section_contents(self.started_section, top, rows)
 
     def _render_about_section(self, width, cap):
         """Top of the cluster-wide pending list, sorted by ETA (soonest first).
@@ -563,13 +573,14 @@ class ScreenViewQueue(u.WidgetWrap):
         title = SectionBanner(f"Starting next  ({total_pending} pending)",
                               width=width)
         col_header = u.AttrMap(_header(ABOUT_LAYOUT), 'faded')
-        body = [title, col_header]
+        top = [title, col_header]
 
         if not pending_with_eta and not pending_without:
-            body.append(u.Text(("faded", "  (no pending jobs in the queue)")))
+            top.append(u.Text(("faded", "  (no pending jobs in the queue)")))
+            rows = []
         else:
             # ETA-known first (sorted by soonest), then unknowns at the end.
             ordered = [j for _, j in pending_with_eta] + pending_without
-            for job in ordered[:cap] if cap else []:
-                body.append(AboutToStartJobWidget(job))
-        self._set_section_contents(self.about_section, body)
+            rows = [AboutToStartJobWidget(job)
+                    for job in (ordered[:cap] if cap else [])]
+        self._set_section_contents(self.about_section, top, rows)
