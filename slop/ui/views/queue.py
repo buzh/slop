@@ -81,6 +81,7 @@ def _snapshot_job(job):
         'jobid': job.job_id,
         'name': (getattr(job, 'name', None) or EMPTY_PLACEHOLDER),
         'user': getattr(job, 'user_name', EMPTY_PLACEHOLDER),
+        'account': getattr(job, 'account', EMPTY_PLACEHOLDER) or EMPTY_PLACEHOLDER,
         'partition': job_partition(job),
         'state': state,
         'submit_ts': ts(getattr(job, 'submit_time', {})),
@@ -92,6 +93,17 @@ def _snapshot_job(job):
         'resources': compact_tres(job),
         'returncode': getattr(job, 'returncode', EMPTY_PLACEHOLDER),
     }
+
+
+def _format_submit_ts(submit_ts):
+    """`HH:MM` if today, else `dd/mm HH:MM` — matches the main job-list view."""
+    if not submit_ts:
+        return EMPTY_PLACEHOLDER
+    import datetime as _dt
+    t = _dt.datetime.fromtimestamp(int(submit_ts))
+    if t.date() == _dt.datetime.now().date():
+        return t.strftime('%H:%M')
+    return t.strftime('%d/%m %H:%M')
 
 
 # ----- Column layouts -----------------------------------------------------
@@ -111,7 +123,9 @@ ENDED_LAYOUT = [
     ('St',        'right', 'given',   3, 'clip'),
     ('Job ID',    'right', 'given',  10, 'clip'),
     ('User',      'left',  'weight',  3, 'ellipsis'),
+    ('Account',   'left',  'weight',  3, 'ellipsis'),
     ('Partition', 'left',  'weight',  3, 'ellipsis'),
+    ('Submitted', 'left',  'given',  11, 'clip'),
     ('Used',      'right', 'given',   9, 'clip'),
     ('Limit',     'right', 'given',   9, 'clip'),
     ('Exit',      'left',  'given',  11, 'clip'),
@@ -124,6 +138,7 @@ FINISHING_LAYOUT = [
     ('St',        'right', 'given',   3, 'clip'),
     ('Job ID',    'right', 'given',  10, 'clip'),
     ('User',      'left',  'weight',  3, 'ellipsis'),
+    ('Account',   'left',  'weight',  3, 'ellipsis'),
     ('Partition', 'left',  'weight',  3, 'ellipsis'),
     ('Remaining', 'right', 'given',  12, 'clip'),
     ('Ran',       'right', 'given',  11, 'clip'),
@@ -135,6 +150,7 @@ STARTED_LAYOUT = [
     ('St',        'right', 'given',   3, 'clip'),
     ('Job ID',    'right', 'given',  10, 'clip'),
     ('User',      'left',  'weight',  3, 'ellipsis'),
+    ('Account',   'left',  'weight',  3, 'ellipsis'),
     ('Partition', 'left',  'weight',  3, 'ellipsis'),
     ('Waited',    'right', 'given',  10, 'clip'),
     ('Ran',       'right', 'given',  10, 'clip'),
@@ -197,7 +213,9 @@ class EndedJobWidget(_ReadOnlyRow):
             state_short(snap['state']),
             snap['jobid'],
             snap['user'],
+            snap.get('account') or EMPTY_PLACEHOLDER,
             snap['partition'],
+            _format_submit_ts(snap['submit_ts']),
             used_str,
             limit_str,
             snap['returncode'],
@@ -229,6 +247,7 @@ class FinishingJobWidget(_ReadOnlyRow):
             state_short(state),
             job.job_id,
             getattr(job, 'user_name', EMPTY_PLACEHOLDER),
+            getattr(job, 'account', EMPTY_PLACEHOLDER) or EMPTY_PLACEHOLDER,
             job_partition(job),
             remaining,
             ran,
@@ -259,6 +278,7 @@ class StartedJobWidget(_ReadOnlyRow):
             state_short(state),
             job.job_id,
             getattr(job, 'user_name', EMPTY_PLACEHOLDER),
+            getattr(job, 'account', EMPTY_PLACEHOLDER) or EMPTY_PLACEHOLDER,
             job_partition(job),
             wait_str,
             ran_str,
