@@ -83,6 +83,7 @@ def _snapshot_job(job):
         'user': getattr(job, 'user_name', EMPTY_PLACEHOLDER),
         'account': getattr(job, 'account', EMPTY_PLACEHOLDER) or EMPTY_PLACEHOLDER,
         'partition': job_partition(job),
+        'nodes': getattr(job, 'nodes', '') or EMPTY_PLACEHOLDER,
         'state': state,
         'submit_ts': ts(getattr(job, 'submit_time', {})),
         'start_ts': ts(getattr(job, 'start_time', {})),
@@ -131,6 +132,7 @@ ENDED_LAYOUT = [
     ('Exit',           'left',  'given',  11, 'clip'),
     ('Waited',    'right', 'given',   9, 'clip'),
     ('Resources', 'left',  'weight',  4, 'ellipsis'),
+    ('Nodes',     'left',  'weight',  4, 'ellipsis'),
     ('Name',      'left',  'weight',  6, 'ellipsis'),
 ]
 
@@ -143,6 +145,7 @@ FINISHING_LAYOUT = [
     ('Remaining', 'right', 'given',  12, 'clip'),
     ('Ran',       'right', 'given',  11, 'clip'),
     ('Resources', 'left',  'weight',  4, 'ellipsis'),
+    ('Nodes',     'left',  'weight',  4, 'ellipsis'),
     ('Name',      'left',  'weight',  6, 'ellipsis'),
 ]
 
@@ -156,6 +159,7 @@ STARTED_LAYOUT = [
     ('Ran',       'right', 'given',  10, 'clip'),
     ('Limit',     'right', 'given',   9, 'clip'),
     ('Resources', 'left',  'weight',  4, 'ellipsis'),
+    ('Nodes',     'left',  'weight',  4, 'ellipsis'),
     ('Name',      'left',  'weight',  6, 'ellipsis'),
 ]
 
@@ -221,6 +225,7 @@ class EndedJobWidget(_ReadOnlyRow):
             snap['returncode'],
             waited_str,
             snap.get('resources') or EMPTY_PLACEHOLDER,
+            snap.get('nodes') or EMPTY_PLACEHOLDER,
             snap['name'],
         ]
         super().__init__(u.AttrMap(_row(ENDED_LAYOUT, values),
@@ -252,6 +257,7 @@ class FinishingJobWidget(_ReadOnlyRow):
             remaining,
             ran,
             compact_tres(job) or EMPTY_PLACEHOLDER,
+            getattr(job, 'nodes', '') or EMPTY_PLACEHOLDER,
             getattr(job, 'name', EMPTY_PLACEHOLDER) or EMPTY_PLACEHOLDER,
         ]
         # COMPLETING (epilog/cleanup) and <5 min remaining both get warning;
@@ -284,6 +290,7 @@ class StartedJobWidget(_ReadOnlyRow):
             ran_str,
             time_limit_str(job),
             compact_tres(job) or EMPTY_PLACEHOLDER,
+            getattr(job, 'nodes', '') or EMPTY_PLACEHOLDER,
             getattr(job, 'name', EMPTY_PLACEHOLDER) or EMPTY_PLACEHOLDER,
         ]
         super().__init__(u.AttrMap(_row(STARTED_LAYOUT, values),
