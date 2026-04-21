@@ -774,76 +774,79 @@ class ScreenViewQueue(u.WidgetWrap):
         self._set_section_contents(self.about_section, top, rows)
 
     # --- Focus / keypress --------------------------------------------------
+    #
+    # Arrow navigation is handled explicitly here rather than delegating to
+    # urwid's Pile-of-Piles. Each section pile has a non-selectable weight
+    # spacer between its header rows and its job rows (used to pin rows to
+    # the bottom — the conveyor belt effect). Letting urwid's cursor walker
+    # cross that spacer is fragile: it tends to land on the spacer/header,
+    # which we can't represent as a "focused job", so the next re-render
+    # falls back to "last selectable" (the bottom row). Doing it ourselves:
+    # always land on a real row, never confuse the saved-focus state.
+
+    PAGE_STEP = 5
 
     def _section_piles(self):
         """The four section piles in display order, mirroring SECTION_WEIGHTS."""
         return (self.ended_section, self.finishing_section,
                 self.started_section, self.about_section)
 
-    def _capture_focus(self):
-        """Snapshot which section + which job is selected so that the next
-        re-render can restore focus to the same place."""
-        try:
-            section_idx = self.outer_pile.focus_position
-        except (IndexError, AttributeError):
-            return
+    @staticmethod
+    def _selectable_rows(section_pile):
+        """List of (content_index, widget) pairs for selectable rows."""
+        out = []
+        for i, (w, _opts) in enumerate(section_pile.contents):
+            try:
+                if w.selectable():
+                    out.append((i, w))
+            except Exception:
+                pass
+        return out
+
+    def _save_current(self, section_idx, section_pile):
+        """Persist (section, jobid) for the next re-render. Skips when the
+        currently focused widget isn't a row — never overwrite a real saved
+        jobid with None."""
         self.focused_section = section_idx
-        section_pile = self._section_piles()[section_idx]
         focused = section_pile.focus
-        jobid = getattr(focused, 'jobid', None) if focused is not None else None
-        self.focused_jobid_by_section[section_idx] = jobid
+        jid = getattr(focused, 'jobid', None) if focused is not None else None
+        if jid is not None:
+            self.focused_jobid_by_section[section_idx] = jid
 
     def _restore_focus(self):
-        """Snap focus back to the saved section/job after re-rendering.
-        If the previously-focused job is gone, fall back to the bottom-most
-        (newest) selectable row in the section — matches the conveyor-belt
-        intuition of "fresh entries arrive at the bottom"."""
+        """After a re-render, put the cursor back on the previously focused
+        job. If that job is gone, fall back to the bottom-most row in the
+        same section — matches the conveyor-belt intuition of "fresh entries
+        arrive at the bottom". If the section itself is now empty, walk
+        outward to the nearest non-empty section."""
         sections = self._section_piles()
         n = len(sections)
-        section_idx = max(0, min(self.focused_section, n - 1))
-        # Skip empty sections by walking outward; if everything's empty we
-        # just leave focus where Pile defaults it.
+        start = max(0, min(self.focused_section, n - 1))
         for offset in range(n):
             for direction in (0, -1, 1):
                 if direction == 0 and offset > 0:
                     continue
-                idx = section_idx + direction * offset
+                idx = start + direction * offset
                 if not (0 <= idx < n):
                     continue
-                if self._focus_section(sections[idx], idx):
-                    try:
-                        self.outer_pile.focus_position = idx
-                    except (IndexError, ValueError):
-                        pass
-                    return
-
-    def _focus_section(self, section_pile, section_idx):
-        """Try to focus a row inside `section_pile`. Returns True if any
-        selectable row was found (and focused)."""
-        target_jid = self.focused_jobid_by_section.get(section_idx)
-        last_selectable = None
-        for i, (w, _opts) in enumerate(section_pile.contents):
-            try:
-                sel = w.selectable()
-            except Exception:
-                sel = False
-            if not sel:
-                continue
-            last_selectable = i
-            if target_jid is not None and getattr(w, 'jobid', None) == target_jid:
-                section_pile.focus_position = i
-                return True
-        if last_selectable is not None:
-            section_pile.focus_position = last_selectable
-            return True
-        return False
+                rows = self._selectable_rows(sections[idx])
+                if not rows:
+                    continue
+                target_jid = self.focused_jobid_by_section.get(idx)
+                pos = next((i for (i, w) in rows
+                            if getattr(w, 'jobid', None) == target_jid),
+                           rows[-1][0])
+                sections[idx].focus_position = pos
+                try:
+                    self.outer_pile.focus_position = idx
+                except (IndexError, ValueError):
+                    pass
+                return
 
     def _focused_jobid(self):
-        try:
-            section_idx = self.outer_pile.focus_position
-        except (IndexError, AttributeError):
-            return None
-        focused = self._section_piles()[section_idx].focus
+        sections = self._section_piles()
+        sec = max(0, min(self.focused_section, len(sections) - 1))
+        focused = sections[sec].focus
         return getattr(focused, 'jobid', None) if focused is not None else None
 
     def _open_job_info(self, jobid):
@@ -856,6 +859,68 @@ class ScreenViewQueue(u.WidgetWrap):
             return
         self.main_screen.open_overlay(JobInfoOverlay(job, self.main_screen))
 
+    def _move_focus(self, key):
+        """Explicit row-by-row / section-by-section navigation."""
+        sections = self._section_piles()
+        n = len(sections)
+        sec = max(0, min(self.focused_section, n - 1))
+        rows = self._selectable_rows(sections[sec])
+        if not rows:
+            # Current section has nothing to focus — fall back to the
+            # nearest section that does.
+            self._restore_focus()
+            return
+        try:
+            cur_idx = sections[sec].focus_position
+        except (IndexError, AttributeError):
+            cur_idx = rows[-1][0]
+        cur_row = next((k for k, (i, _w) in enumerate(rows) if i == cur_idx),
+                       len(rows) - 1)
+
+        if key == 'home':
+            self._land(sec, sections[sec], rows[0][0])
+            return
+        if key == 'end':
+            self._land(sec, sections[sec], rows[-1][0])
+            return
+
+        step = 1 if key in ('up', 'down') else self.PAGE_STEP
+        delta = -step if key in ('up', 'page up') else step
+        new_row = cur_row + delta
+
+        if 0 <= new_row < len(rows):
+            self._land(sec, sections[sec], rows[new_row][0])
+            return
+
+        # Crossed section boundary — find the next non-empty section in
+        # that direction and land on its top (going down) or bottom (going
+        # up). If there is none, clamp to the current section's edge.
+        direction = 1 if delta > 0 else -1
+        idx = sec + direction
+        while 0 <= idx < n:
+            adj_rows = self._selectable_rows(sections[idx])
+            if adj_rows:
+                target = adj_rows[0][0] if direction > 0 else adj_rows[-1][0]
+                self._land(idx, sections[idx], target)
+                return
+            idx += direction
+        # No adjacent section to receive focus — stay at the edge of this
+        # section (top or bottom row).
+        edge = rows[-1][0] if direction > 0 else rows[0][0]
+        self._land(sec, sections[sec], edge)
+
+    def _land(self, section_idx, section_pile, content_idx):
+        """Move focus to (section_idx, content_idx) and persist it."""
+        try:
+            self.outer_pile.focus_position = section_idx
+        except (IndexError, ValueError):
+            pass
+        try:
+            section_pile.focus_position = content_idx
+        except (IndexError, ValueError):
+            pass
+        self._save_current(section_idx, section_pile)
+
     def keypress(self, size, key):
         if self.main_screen.overlay_showing:
             return key
@@ -863,7 +928,8 @@ class ScreenViewQueue(u.WidgetWrap):
             jid = self._focused_jobid()
             if jid is not None:
                 self._open_job_info(jid)
-                return None
-        result = super().keypress(size, key)
-        self._capture_focus()
-        return result
+            return None
+        if key in ('up', 'down', 'page up', 'page down', 'home', 'end'):
+            self._move_focus(key)
+            return None
+        return super().keypress(size, key)
