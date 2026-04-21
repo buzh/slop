@@ -402,10 +402,13 @@ class ScreenViewQueue(u.WidgetWrap):
         # Focus persistence across re-renders. The 3-second refresh tick
         # rebuilds every row widget; without snapshotting the user's
         # selection the cursor would jump back to the default each tick.
-        # Default to the bottom section ("Starting next") since that's
-        # where the user usually browses.
-        self.focused_section = 3
+        # Default to "Recently finished" (section 0) — the first interesting
+        # row to look at. Until the user presses an arrow key, we leave
+        # focus unset if that section is empty rather than auto-jumping
+        # somewhere else.
+        self.focused_section = 0
         self.focused_jobid_by_section = {}
+        self.has_navigated = False
 
         # All four sections re-built each render. Each pile carries its own
         # weight spacer so it's always a box widget and the outer Pile can
@@ -815,13 +818,16 @@ class ScreenViewQueue(u.WidgetWrap):
     def _restore_focus(self):
         """After a re-render, put the cursor back on the previously focused
         job. If that job is gone, fall back to the top row in the same
-        section. If the section itself is now empty, walk outward to the
-        nearest non-empty section."""
+        section. If the section itself is now empty and the user has
+        already navigated, walk outward to the nearest non-empty section;
+        if they haven't navigated yet, leave focus unset so an empty
+        Recently-finished section doesn't auto-pull focus elsewhere."""
         sections = self._section_piles()
         n = len(sections)
         start = max(0, min(self.focused_section, n - 1))
+        directions = (0, -1, 1) if self.has_navigated else (0,)
         for offset in range(n):
-            for direction in (0, -1, 1):
+            for direction in directions:
                 if direction == 0 and offset > 0:
                     continue
                 idx = start + direction * offset
@@ -859,6 +865,7 @@ class ScreenViewQueue(u.WidgetWrap):
 
     def _move_focus(self, key):
         """Explicit row-by-row / section-by-section navigation."""
+        self.has_navigated = True
         sections = self._section_piles()
         n = len(sections)
         sec = max(0, min(self.focused_section, n - 1))
