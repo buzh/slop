@@ -211,19 +211,26 @@ ABOUT_LAYOUT = [
 ]
 
 
-def _row(layout, values):
-    """Build a `u.Columns` row from `values` paralleling `layout`."""
+def _row(layout, values, align_override=None):
+    """Build a `u.Columns` row from `values` paralleling `layout`.
+
+    If `align_override` is given, every column uses that alignment instead
+    of its declared one — used by `_header` so all titles share a single
+    alignment regardless of how the data cells line up.
+    """
     cols = []
     for (_label, align, kind, size, wrap), value in zip(layout, values):
-        t = u.Text(str(value), align=align)
+        t = u.Text(str(value), align=align_override or align)
         t.set_wrap_mode(wrap)
         cols.append((kind, size, t))
     return u.Columns(cols, dividechars=1)
 
 
 def _header(layout):
-    """Build the column-header row for `layout`."""
-    return _row(layout, [col[0] for col in layout])
+    """Build the column-header row for `layout`. All header titles are
+    left-aligned so the eye scans a single straight column of labels,
+    even when some cells (numbers, timestamps) are right-aligned."""
+    return _row(layout, [col[0] for col in layout], align_override='left')
 
 
 # ----- Widgets ------------------------------------------------------------
