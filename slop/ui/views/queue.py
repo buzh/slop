@@ -921,6 +921,16 @@ class ScreenViewQueue(u.WidgetWrap):
             pass
         self._save_current(section_idx, section_pile)
 
+    def selectable(self):
+        # Force-true regardless of the wrapped widget's opinion. The outer
+        # Pile caches its `_selectable` flag from its children at init time,
+        # and the four section piles all start out as non-selectable
+        # spacer-only piles — so the cache says False forever, and arrow
+        # keys never get delivered to this view. We always have at least
+        # one row to focus once data arrives, and we handle Enter/Up/Down/
+        # PageUp/PageDown/Home/End ourselves in keypress().
+        return True
+
     def keypress(self, size, key):
         if self.main_screen.overlay_showing:
             return key
