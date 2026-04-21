@@ -17,11 +17,11 @@ PENDING→RUNNING state transition across two refresh ticks, which silently
 dropped jobs that scheduled fast enough to appear as RUNNING on the very
 first tick we saw them.
 
-Sections 2 and 3 are *not* mutually exclusive: a short, freshly-started job
-(e.g. 5 min runtime) is both "recently started" and "finishing next" and
-shows in both. They answer different questions — recent scheduling activity
-vs imminent completion — and forcing exclusion would have hidden short jobs
-from the finishing list entirely.
+Section 2 wins over section 3 when a short job qualifies for both: a job
+already shown in "Finishing next" is suppressed from "Recently started"
+even if that leaves the lower section under-filled. The duplicate row was
+the more confusing failure mode; an empty slot in "Recently started" reads
+fine because the job is still visible (just one row higher).
 
 The partition-grouped pending list that used to sit in section 4 now lives in
 the Scheduler view (F8); F7 is exclusively the "what's about to change" view.
@@ -487,11 +487,6 @@ class ScreenViewQueue(u.WidgetWrap):
             is_completing = 'COMPLETING' in states
             if not (is_running or is_completing):
                 continue
-            # No exclusion against "Recently started" — a short job (e.g. 5
-            # min) would otherwise spend its entire life there and never
-            # bubble up here. The two sections answer different questions
-            # ("what just got scheduled?" vs "what's about to finish?") and
-            # a fresh, soon-to-end job legitimately belongs in both.
             if is_completing:
                 # Epilog/cleanup — sort to the very top of the section since
                 # they're the closest to vanishing into "Recently finished".
@@ -512,18 +507,30 @@ class ScreenViewQueue(u.WidgetWrap):
         title = SectionBanner("Finishing next", width=width)
         col_header = u.AttrMap(_header(FINISHING_LAYOUT), 'faded')
         top = [title, col_header]
+        visible = candidates[:cap] if cap else []
         if not candidates:
             top.append(u.Text(("faded", "  (no running jobs with a known end time)")))
             rows = []
         else:
-            rows = [FinishingJobWidget(job)
-                    for _, job in (candidates[:cap] if cap else [])]
+            rows = [FinishingJobWidget(job) for _, job in visible]
+        # Stash the rendered set so `_render_started_section` can skip
+        # anything that's already on screen in this section (avoids the
+        # same short job showing in both "Recently started" and
+        # "Finishing next" at the same time).
+        self._finishing_visible_jobids = {job.job_id for _, job in visible}
         self._set_section_contents(self.finishing_section, top, rows)
 
     def _render_started_section(self, width, cap):
         now = time.time()
+        # Skip anything that's currently visible in "Finishing next" —
+        # otherwise a short, freshly-started job would appear in both
+        # sections at once. Recently started may end up under-filled as
+        # a result; that's preferable to duplicate rows.
+        skip = getattr(self, '_finishing_visible_jobids', set())
         candidates = []
         for j in self.jobs.jobs:
+            if j.job_id in skip:
+                continue
             if not _is_just_started(j, now):
                 continue
             start_ts = ts(getattr(j, 'start_time', {}))
