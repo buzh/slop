@@ -94,86 +94,82 @@ def _snapshot_job(job):
     }
 
 
-# ----- Lifecycle row formatters -------------------------------------------
+# ----- Column layouts -----------------------------------------------------
 #
-# Each formatter builds a fixed-width prefix and lets `name` absorb whatever
-# horizontal space is left over. Field widths are sized for the longest
-# values we realistically see ("SUCCESS(0)" exit codes, 14-char usernames,
-# etc.) so no truncation happens at typical terminal widths. The narrow
-# (<100) fallback drops several columns and uses tight widths.
+# Each layout is a list of (label, align, kind, size, wrap) tuples shared by
+# the row builder and the header builder so columns line up automatically.
+#   label: header text
+#   align: 'left' or 'right' (passed to the cell's Text widget)
+#   kind:  'given' (fixed N chars) or 'weight' (proportional share)
+#   size:  N (chars for 'given', relative weight for 'weight')
+#   wrap:  'clip' or 'ellipsis' for overflow
+#
+# Weight columns absorb the leftover horizontal space — the row scales with
+# the terminal instead of being truncated at hard-coded widths.
+
+ENDED_LAYOUT = [
+    ('St',        'right', 'given',   3, 'clip'),
+    ('Job ID',    'right', 'given',  10, 'clip'),
+    ('User',      'left',  'weight',  3, 'ellipsis'),
+    ('Partition', 'left',  'weight',  3, 'ellipsis'),
+    ('Used',      'right', 'given',   9, 'clip'),
+    ('Limit',     'right', 'given',   9, 'clip'),
+    ('Exit',      'left',  'given',  11, 'clip'),
+    ('Waited',    'right', 'given',   9, 'clip'),
+    ('Resources', 'left',  'weight',  4, 'ellipsis'),
+    ('Name',      'left',  'weight',  6, 'ellipsis'),
+]
+
+FINISHING_LAYOUT = [
+    ('St',        'right', 'given',   3, 'clip'),
+    ('Job ID',    'right', 'given',  10, 'clip'),
+    ('User',      'left',  'weight',  3, 'ellipsis'),
+    ('Partition', 'left',  'weight',  3, 'ellipsis'),
+    ('Remaining', 'right', 'given',  12, 'clip'),
+    ('Ran',       'right', 'given',  11, 'clip'),
+    ('Resources', 'left',  'weight',  4, 'ellipsis'),
+    ('Name',      'left',  'weight',  6, 'ellipsis'),
+]
+
+STARTED_LAYOUT = [
+    ('St',        'right', 'given',   3, 'clip'),
+    ('Job ID',    'right', 'given',  10, 'clip'),
+    ('User',      'left',  'weight',  3, 'ellipsis'),
+    ('Partition', 'left',  'weight',  3, 'ellipsis'),
+    ('Waited',    'right', 'given',  10, 'clip'),
+    ('Ran',       'right', 'given',  10, 'clip'),
+    ('Limit',     'right', 'given',   9, 'clip'),
+    ('Resources', 'left',  'weight',  4, 'ellipsis'),
+    ('Name',      'left',  'weight',  6, 'ellipsis'),
+]
+
+ABOUT_LAYOUT = [
+    ('ETA',       'left',  'given',  14, 'clip'),
+    ('Job ID',    'right', 'given',  10, 'clip'),
+    ('User',      'left',  'weight',  3, 'ellipsis'),
+    ('Partition', 'left',  'weight',  3, 'ellipsis'),
+    ('Priority',  'right', 'given',   8, 'clip'),
+    ('Reason',    'left',  'given',  14, 'clip'),
+    ('Resources', 'left',  'weight',  4, 'ellipsis'),
+    ('Time',      'right', 'given',   9, 'clip'),
+    ('Waited',    'right', 'given',   9, 'clip'),
+    ('Name',      'left',  'weight',  6, 'ellipsis'),
+]
 
 
-def _flex_row(prefix, name, width):
-    """Append `name` to `prefix` so the total line fits `width`."""
-    name_w = max(8, width - len(prefix))
-    return prefix + str(name)[:name_w]
+def _row(layout, values):
+    """Build a `u.Columns` row from `values` paralleling `layout`."""
+    cols = []
+    for (_label, align, kind, size, wrap), value in zip(layout, values):
+        t = u.Text(str(value), align=align)
+        t.set_wrap_mode(wrap)
+        cols.append((kind, size, t))
+    return u.Columns(cols, dividechars=1)
 
 
-def _format_ended_row(width, *, state, jobid, user, partition,
-                      used, limit, exit_code, resources, waited, name):
-    if width < 100:
-        return f"{state:>3} {jobid:>9} {user:<10} {used:>8}/{limit:<8} {name}"
-    prefix = (f"{state:>3} {jobid:>9} {user:<14} {partition:<12} "
-              f"{used:>9}/{limit:<9} {exit_code:<11} {waited:>9}  "
-              f"{resources:<20} ")
-    return _flex_row(prefix, name, width)
-
-
-def _ended_header(width):
-    return _format_ended_row(
-        width, state='St', jobid='Job ID', user='User', partition='Partition',
-        used='Used', limit='Limit', exit_code='Exit', waited='Waited',
-        resources='Resources', name='Name',
-    )
-
-
-def _format_finishing_row(width, *, state, jobid, user, partition,
-                          remaining, ran, resources, name):
-    if width < 100:
-        return f"{state:>3} {jobid:>9} {user:<10} {remaining:>10} {name}"
-    prefix = (f"{state:>3} {jobid:>9} {user:<14} {partition:<12} "
-              f"{remaining:>11} {ran:>11}  {resources:<20} ")
-    return _flex_row(prefix, name, width)
-
-
-def _finishing_header(width):
-    return _format_finishing_row(
-        width, state='St', jobid='Job ID', user='User', partition='Partition',
-        remaining='Remaining', ran='Ran', resources='Resources', name='Name',
-    )
-
-
-def _format_started_row(width, *, state, jobid, user, partition,
-                        wait, ran, tlim, resources, name):
-    if width < 100:
-        return f"{state:>3} {jobid:>9} {user:<10} {wait:>10} {ran:>10} {name}"
-    prefix = (f"{state:>3} {jobid:>9} {user:<14} {partition:<12} "
-              f"{wait:>10} {ran:>10} {tlim:>9}  {resources:<20} ")
-    return _flex_row(prefix, name, width)
-
-
-def _started_header(width):
-    return _format_started_row(
-        width, state='St', jobid='Job ID', user='User', partition='Partition',
-        wait='Waited', ran='Ran', tlim='Limit',
-        resources='Resources', name='Name',
-    )
-
-
-def _format_about_row(width, *, eta, jobid, user, partition, priority,
-                      reason, resources, tlim, wait, name):
-    if width < 100:
-        return f"{eta:<13} {jobid:>9} {user:<10} {partition:<12} {reason:<14} {name:<20}"
-    return (f"{eta:<14} {jobid:>9} {user:<12} {partition:<14} "
-            f"{priority:>8} {reason:<14} {resources:<18} {tlim:>9} {wait:>9}  {name:<20}")
-
-
-def _about_header(width):
-    return _format_about_row(
-        width, eta='ETA', jobid='Job ID', user='User', partition='Partition',
-        priority='Priority', reason='Reason', resources='Resources',
-        tlim='Time', wait='Waited', name='Name',
-    )
+def _header(layout):
+    """Build the column-header row for `layout`."""
+    return _row(layout, [col[0] for col in layout])
 
 
 # ----- Widgets ------------------------------------------------------------
@@ -186,7 +182,7 @@ class _ReadOnlyRow(u.WidgetWrap):
 
 
 class EndedJobWidget(_ReadOnlyRow):
-    def __init__(self, snap, width=120):
+    def __init__(self, snap):
         used_str = (coarse_duration(int(snap['end_ts'] - snap['start_ts']))
                     if snap['end_ts'] and snap['start_ts']
                     and snap['end_ts'] >= snap['start_ts']
@@ -197,24 +193,24 @@ class EndedJobWidget(_ReadOnlyRow):
                       if snap['start_ts'] and snap['submit_ts']
                       and snap['start_ts'] >= snap['submit_ts']
                       else EMPTY_PLACEHOLDER)
-        text = _format_ended_row(
-            width,
-            state=state_short(snap['state']),
-            jobid=str(snap['jobid'])[:9],
-            user=str(snap['user'])[:14],
-            partition=str(snap['partition'])[:12],
-            used=used_str[:9],
-            limit=limit_str[:9],
-            exit_code=str(snap['returncode'])[:11],
-            waited=waited_str[:9],
-            resources=(snap.get('resources') or EMPTY_PLACEHOLDER)[:20],
-            name=snap['name'],
-        )
-        super().__init__(u.AttrMap(u.Text(text), state_attr(snap['state'])))
+        values = [
+            state_short(snap['state']),
+            snap['jobid'],
+            snap['user'],
+            snap['partition'],
+            used_str,
+            limit_str,
+            snap['returncode'],
+            waited_str,
+            snap.get('resources') or EMPTY_PLACEHOLDER,
+            snap['name'],
+        ]
+        super().__init__(u.AttrMap(_row(ENDED_LAYOUT, values),
+                                   state_attr(snap['state'])))
 
 
 class FinishingJobWidget(_ReadOnlyRow):
-    def __init__(self, job, width=120):
+    def __init__(self, job):
         end_ts = ts(getattr(job, 'end_time', {}))
         start_ts = ts(getattr(job, 'start_time', {}))
         now = time.time()
@@ -229,28 +225,27 @@ class FinishingJobWidget(_ReadOnlyRow):
         ran = (coarse_duration(int(now - start_ts))
                if start_ts and now >= start_ts else EMPTY_PLACEHOLDER)
         state = states[0] if states else 'R'
-        text = _format_finishing_row(
-            width,
-            state=state_short(state),
-            jobid=str(job.job_id)[:9],
-            user=str(getattr(job, 'user_name', EMPTY_PLACEHOLDER))[:14],
-            partition=job_partition(job)[:12],
-            remaining=remaining[:11],
-            ran=ran[:11],
-            resources=(compact_tres(job) or EMPTY_PLACEHOLDER)[:20],
-            name=str(getattr(job, 'name', EMPTY_PLACEHOLDER) or EMPTY_PLACEHOLDER),
-        )
+        values = [
+            state_short(state),
+            job.job_id,
+            getattr(job, 'user_name', EMPTY_PLACEHOLDER),
+            job_partition(job),
+            remaining,
+            ran,
+            compact_tres(job) or EMPTY_PLACEHOLDER,
+            getattr(job, 'name', EMPTY_PLACEHOLDER) or EMPTY_PLACEHOLDER,
+        ]
         # COMPLETING (epilog/cleanup) and <5 min remaining both get warning;
         # everything else stays neutral.
         if is_completing or (end_ts and end_ts - now < 300):
             attr = 'warning'
         else:
             attr = 'normal'
-        super().__init__(u.AttrMap(u.Text(text), attr))
+        super().__init__(u.AttrMap(_row(FINISHING_LAYOUT, values), attr))
 
 
 class StartedJobWidget(_ReadOnlyRow):
-    def __init__(self, job, width=120):
+    def __init__(self, job):
         now = time.time()
         start_ts = ts(getattr(job, 'start_time', {}))
         submit_ts = ts(getattr(job, 'submit_time', {}))
@@ -260,29 +255,28 @@ class StartedJobWidget(_ReadOnlyRow):
         ran_str = (coarse_duration(int(now - start_ts))
                    if start_ts and now >= start_ts else EMPTY_PLACEHOLDER)
         state = job.job_state[0] if getattr(job, 'job_state', None) else 'R'
-        text = _format_started_row(
-            width,
-            state=state_short(state),
-            jobid=str(job.job_id)[:9],
-            user=str(getattr(job, 'user_name', EMPTY_PLACEHOLDER))[:14],
-            partition=job_partition(job)[:12],
-            wait=wait_str[:10],
-            ran=ran_str[:10],
-            tlim=time_limit_str(job)[:9],
-            resources=(compact_tres(job) or EMPTY_PLACEHOLDER)[:20],
-            name=str(getattr(job, 'name', EMPTY_PLACEHOLDER) or EMPTY_PLACEHOLDER),
-        )
-        super().__init__(u.AttrMap(u.Text(text), state_attr(state)))
+        values = [
+            state_short(state),
+            job.job_id,
+            getattr(job, 'user_name', EMPTY_PLACEHOLDER),
+            job_partition(job),
+            wait_str,
+            ran_str,
+            time_limit_str(job),
+            compact_tres(job) or EMPTY_PLACEHOLDER,
+            getattr(job, 'name', EMPTY_PLACEHOLDER) or EMPTY_PLACEHOLDER,
+        ]
+        super().__init__(u.AttrMap(_row(STARTED_LAYOUT, values),
+                                   state_attr(state)))
 
 
 class AboutToStartJobWidget(u.WidgetWrap):
     """Selectable row for a pending job in the bottom (starting-next) section.
     Cluster-wide, sorted by ETA, partition column visible."""
 
-    def __init__(self, job, width=120):
+    def __init__(self, job):
         self.job = job
         self.jobid = job.job_id
-        self.width = width
         super().__init__(self._build())
 
     def selectable(self):
@@ -304,21 +298,15 @@ class AboutToStartJobWidget(u.WidgetWrap):
         wait = format_wait(getattr(job, 'submit_time', {}))
         name = job.name or EMPTY_PLACEHOLDER
 
-        text = _format_about_row(
-            self.width,
-            eta=eta[:14], jobid=str(job.job_id)[:9],
-            user=user[:12], partition=partition[:14],
-            priority=str(priority)[:8], reason=reason[:14],
-            resources=resources[:18], tlim=tlim[:9], wait=wait[:9],
-            name=name[:20],
-        )
+        values = [eta, job.job_id, user, partition, priority, reason,
+                  resources, tlim, wait, name]
         # Soonest jobs (within 5 min or already overdue) get the success attr
         # so they pop visually; everything else stays neutral.
         if diff is not None and diff < 300:
             attr = 'success'
         else:
             attr = reason_attr(reason)
-        return u.AttrMap(u.Text(text), attr, 'normal_selected')
+        return u.AttrMap(_row(ABOUT_LAYOUT, values), attr, 'normal_selected')
 
 
 # ----- Screen -------------------------------------------------------------
@@ -355,7 +343,7 @@ class ScreenViewQueue(u.WidgetWrap):
         # Bottom section uses a ListBox so the user can scroll past whatever
         # fits in the allotted height.
         self.about_summary = u.Text("")
-        self.about_col_header = u.AttrMap(u.Text(""), 'jobheader')
+        self.about_col_header = u.AttrMap(_header(ABOUT_LAYOUT), 'jobheader')
         self.about_walker = u.SimpleFocusListWalker([])
         self.about_listbox = u.ListBox(self.about_walker)
         about_section = u.Pile([
@@ -476,13 +464,13 @@ class ScreenViewQueue(u.WidgetWrap):
         # No count in the title: it's the "most recently finished N" where N
         # is whatever fits, same as the other dynamic sections.
         title = SectionBanner("Recently finished", width=width)
-        col_header = u.AttrMap(u.Text(_ended_header(width)), 'faded')
+        col_header = u.AttrMap(_header(ENDED_LAYOUT), 'faded')
         body = [title, col_header]
         if not items:
             body.append(u.Text(("faded", "  (no jobs have finished since the view opened)")))
         else:
             for snap, _ts_seen in items:
-                body.append(EndedJobWidget(snap, width=width))
+                body.append(EndedJobWidget(snap))
         self._set_section_contents(self.ended_section, body)
 
     def _render_finishing_section(self, width, cap):
@@ -517,13 +505,13 @@ class ScreenViewQueue(u.WidgetWrap):
         # finish" where N is whatever fits in the window — the total number
         # of running jobs would just be misleading.
         title = SectionBanner("Finishing next", width=width)
-        col_header = u.AttrMap(u.Text(_finishing_header(width)), 'faded')
+        col_header = u.AttrMap(_header(FINISHING_LAYOUT), 'faded')
         body = [title, col_header]
         if not candidates:
             body.append(u.Text(("faded", "  (no running jobs with a known end time)")))
         else:
             for _, job in candidates[:cap] if cap else []:
-                body.append(FinishingJobWidget(job, width=width))
+                body.append(FinishingJobWidget(job))
         self._set_section_contents(self.finishing_section, body)
 
     def _render_started_section(self, width, cap):
@@ -545,20 +533,19 @@ class ScreenViewQueue(u.WidgetWrap):
         # No count in the title: this section is always "the most recently
         # started N jobs" where N is whatever fits in the window.
         title = SectionBanner("Recently started", width=width)
-        col_header = u.AttrMap(u.Text(_started_header(width)), 'faded')
+        col_header = u.AttrMap(_header(STARTED_LAYOUT), 'faded')
         body = [title, col_header]
         if not candidates:
             body.append(u.Text(
                 ("faded", "  (no jobs have started in the last 15 minutes)")))
         else:
             for _, job in candidates:
-                body.append(StartedJobWidget(job, width=width))
+                body.append(StartedJobWidget(job))
         self._set_section_contents(self.started_section, body)
 
     def _render_about_section(self, width):
         """Cross-partition pending jobs sorted by ETA (soonest first)."""
         self.about_walker.clear()
-        self.about_col_header.original_widget.set_text(_about_header(width))
 
         pending_with_eta = []
         pending_without = []
@@ -592,9 +579,9 @@ class ScreenViewQueue(u.WidgetWrap):
             # ETA-known first (sorted by soonest), then unknowns at the end so
             # the user can still drill into them.
             for _, job in pending_with_eta:
-                widgets.append(AboutToStartJobWidget(job, width=width))
+                widgets.append(AboutToStartJobWidget(job))
             for job in pending_without:
-                widgets.append(AboutToStartJobWidget(job, width=width))
+                widgets.append(AboutToStartJobWidget(job))
 
         self.about_walker.extend(widgets)
         self._restore_about_focus()
