@@ -11,12 +11,16 @@ Four sections, top to bottom, mirroring the upward flow of a job:
                         last 15 min)
   4. Starting next     (cluster-wide pending jobs sorted by ETA)
 
-Section 1 is tracker-driven on two triggers: a job vanishing from scontrol
-(the original signal) AND a job's state entering `job_state_ended`. Slurm
-holds completed records in scontrol for `MinJobAge` (default 5 min) before
-purging them; the state-based trigger lets us surface a finished job
-immediately rather than waiting for that purge. Once tracked, entries
-linger until display capacity forces eviction (FIFO). Sections 2, 3, 4 are
+Section 1 is tracker-driven on two triggers: a job's state transitioning
+from non-terminal to terminal (`job_state_ended`) during a refresh, OR a
+job vanishing from scontrol entirely. Both triggers require us to have
+seen the job in a non-terminal state at least once — we don't surface
+jobs that were already terminal at first observation, since those finished
+before we started watching and would clutter the conveyor belt with
+ancient history. Slurm holds completed records for `MinJobAge` (default
+5 min) before purging them; the state-transition trigger surfaces a job
+immediately on completion rather than waiting for that purge. Once
+tracked, entries linger until display capacity forces eviction (FIFO). Sections 2, 3, 4 are
 recomputed each refresh from the current job set, with anything already
 in the ended tracker excluded so it doesn't double-up. Section 3 uses
 `start_time` as the source of truth — earlier versions tried to detect a
@@ -456,24 +460,37 @@ class ScreenViewQueue(u.WidgetWrap):
         now_mono = time.monotonic()
         current_by_id = {j.job_id: j for j in self.jobs.jobs}
 
-        # Trigger 1: job is in a terminal state (CANCELLED/COMPLETED/FAILED/
-        # TIMEOUT/OOM/DEADLINE) but still present in scontrol. Slurm holds
-        # finished records for MinJobAge (default 300s) before purging; we
-        # don't want to wait that long to call a job done. Snapshot from the
-        # live Job — its end_time is already populated with the real wall
-        # time of completion.
+        def _is_terminal(job):
+            states = getattr(job, 'job_state', None) or []
+            return any(s in job_state_ended for s in states)
+
+        # Trigger 1: job's state transitioned from non-terminal to terminal
+        # during this tick. We require the previous tick's snapshot to have
+        # been non-terminal — otherwise we'd dump every long-finished CD/CA/F
+        # job that's still lingering in scontrol (Slurm keeps records around
+        # for MinJobAge, often hours) onto the conveyor belt the instant we
+        # first see them, even though they finished long before this session
+        # started. The conveyor belt is "things that just happened", so we
+        # only put jobs on it when we actually witnessed the transition.
         for jid, job in current_by_id.items():
             if jid in self.ended_tracker:
                 continue
-            states = getattr(job, 'job_state', None) or []
-            if any(s in job_state_ended for s in states):
-                self.ended_tracker[jid] = (_snapshot_job(job), now_mono)
+            if not _is_terminal(job):
+                continue
+            prev = self.prev_jobs_by_id.get(jid)
+            if prev is None or _is_terminal(prev):
+                continue
+            self.ended_tracker[jid] = (_snapshot_job(job), now_mono)
 
-        # Trigger 2: job vanished from scontrol entirely without us catching
-        # it in a terminal state first (e.g. very short-lived, or we missed
-        # the transition between refreshes). Snapshot from the previous tick.
+        # Trigger 2: job vanished from scontrol entirely without us first
+        # catching it in a terminal state (e.g. very short-lived, or the
+        # transition fell between refresh ticks). Same first-observation
+        # caveat: if the previous tick already had it as terminal, it was
+        # already done before we started watching — don't surface it now.
         for jid, prev in self.prev_jobs_by_id.items():
             if jid in current_by_id or jid in self.ended_tracker:
+                continue
+            if _is_terminal(prev):
                 continue
             self.ended_tracker[jid] = (_snapshot_job(prev), now_mono)
 
