@@ -2,12 +2,12 @@
 
 Four sections, top to bottom, mirroring the upward flow of a job:
 
-  1. Just ended       (jobs that vanished from scontrol since the last refresh)
-  2. Finishing soon   (RUNNING ranked by least time-remaining, plus any
-                       COMPLETING/CG epilog jobs pinned to the top)
-  3. Just started     (RUNNING/COMPLETING jobs whose start_time is in the
-                       last 15 min)
-  4. About to start   (cluster-wide pending jobs sorted by ETA)
+  1. Recently finished (jobs that vanished from scontrol since the last refresh)
+  2. Finishing next    (RUNNING ranked by least time-remaining, plus any
+                        COMPLETING/CG epilog jobs pinned to the top)
+  3. Recently started  (RUNNING/COMPLETING jobs whose start_time is in the
+                        last 15 min)
+  4. Starting next     (cluster-wide pending jobs sorted by ETA)
 
 Section 1 is tracker-driven: entries arrive when a job vanishes from scontrol
 and linger until display capacity forces eviction (FIFO). Sections 2, 3, 4
@@ -18,9 +18,9 @@ dropped jobs that scheduled fast enough to appear as RUNNING on the very
 first tick we saw them.
 
 Sections 2 and 3 are *not* mutually exclusive: a short, freshly-started job
-(e.g. 5 min runtime) is both "just started" and "finishing soon" and shows
-in both. They answer different questions — recent scheduling activity vs
-imminent completion — and forcing exclusion would have hidden short jobs
+(e.g. 5 min runtime) is both "recently started" and "finishing next" and
+shows in both. They answer different questions — recent scheduling activity
+vs imminent completion — and forcing exclusion would have hidden short jobs
 from the finishing list entirely.
 
 The partition-grouped pending list that used to sit in section 4 now lives in
@@ -51,7 +51,7 @@ STARTED_MAX_AGE = 15 * 60
 # Tolerance for start_time being slightly in the future relative to our local
 # clock. Slurm sometimes reports a scheduler-side timestamp a few seconds
 # ahead of the host's wall clock; without this tolerance the job is rejected
-# from "Just started" and silently falls into "Finishing soon".
+# from "Recently started" and silently falls into "Finishing next".
 STARTED_FUTURE_TOLERANCE = 5 * 60
 
 
@@ -95,19 +95,34 @@ def _snapshot_job(job):
 
 
 # ----- Lifecycle row formatters -------------------------------------------
+#
+# Each formatter builds a fixed-width prefix and lets `name` absorb whatever
+# horizontal space is left over. Field widths are sized for the longest
+# values we realistically see ("SUCCESS(0)" exit codes, 14-char usernames,
+# etc.) so no truncation happens at typical terminal widths. The narrow
+# (<100) fallback drops several columns and uses tight widths.
+
+
+def _flex_row(prefix, name, width):
+    """Append `name` to `prefix` so the total line fits `width`."""
+    name_w = max(8, width - len(prefix))
+    return prefix + str(name)[:name_w]
+
 
 def _format_ended_row(width, *, state, jobid, user, partition,
-                      used, limit, exit_code, resources, name):
+                      used, limit, exit_code, resources, waited, name):
     if width < 100:
-        return f"{state:>3} {jobid:>9} {user:<10} {used:>8}/{limit:<8} {name:<20}"
-    return (f"{state:>3} {jobid:>9} {user:<12} {partition:<14} "
-            f"{used:>9}/{limit:<9} {exit_code:>6}  {resources:<18} {name:<25}")
+        return f"{state:>3} {jobid:>9} {user:<10} {used:>8}/{limit:<8} {name}"
+    prefix = (f"{state:>3} {jobid:>9} {user:<14} {partition:<12} "
+              f"{used:>9}/{limit:<9} {exit_code:<11} {waited:>9}  "
+              f"{resources:<20} ")
+    return _flex_row(prefix, name, width)
 
 
 def _ended_header(width):
     return _format_ended_row(
         width, state='St', jobid='Job ID', user='User', partition='Partition',
-        used='Used', limit='Limit', exit_code='Exit',
+        used='Used', limit='Limit', exit_code='Exit', waited='Waited',
         resources='Resources', name='Name',
     )
 
@@ -115,9 +130,10 @@ def _ended_header(width):
 def _format_finishing_row(width, *, state, jobid, user, partition,
                           remaining, ran, resources, name):
     if width < 100:
-        return f"{state:>3} {jobid:>9} {user:<10} {remaining:>10} {name:<25}"
-    return (f"{state:>3} {jobid:>9} {user:<12} {partition:<14} "
-            f"{remaining:>11} {ran:>11}  {resources:<18} {name:<25}")
+        return f"{state:>3} {jobid:>9} {user:<10} {remaining:>10} {name}"
+    prefix = (f"{state:>3} {jobid:>9} {user:<14} {partition:<12} "
+              f"{remaining:>11} {ran:>11}  {resources:<20} ")
+    return _flex_row(prefix, name, width)
 
 
 def _finishing_header(width):
@@ -128,17 +144,19 @@ def _finishing_header(width):
 
 
 def _format_started_row(width, *, state, jobid, user, partition,
-                        wait, ran, resources, name):
+                        wait, ran, tlim, resources, name):
     if width < 100:
-        return f"{state:>3} {jobid:>9} {user:<10} {wait:>10} {ran:>10} {name:<20}"
-    return (f"{state:>3} {jobid:>9} {user:<12} {partition:<14} "
-            f"{wait:>10} {ran:>10}  {resources:<18} {name:<25}")
+        return f"{state:>3} {jobid:>9} {user:<10} {wait:>10} {ran:>10} {name}"
+    prefix = (f"{state:>3} {jobid:>9} {user:<14} {partition:<12} "
+              f"{wait:>10} {ran:>10} {tlim:>9}  {resources:<20} ")
+    return _flex_row(prefix, name, width)
 
 
 def _started_header(width):
     return _format_started_row(
         width, state='St', jobid='Job ID', user='User', partition='Partition',
-        wait='Waited', ran='Ran', resources='Resources', name='Name',
+        wait='Waited', ran='Ran', tlim='Limit',
+        resources='Resources', name='Name',
     )
 
 
@@ -175,17 +193,22 @@ class EndedJobWidget(_ReadOnlyRow):
                     else EMPTY_PLACEHOLDER)
         limit_str = (coarse_duration(snap['time_limit_min'] * 60)
                      if snap['time_limit_min'] else EMPTY_PLACEHOLDER)
+        waited_str = (coarse_duration(int(snap['start_ts'] - snap['submit_ts']))
+                      if snap['start_ts'] and snap['submit_ts']
+                      and snap['start_ts'] >= snap['submit_ts']
+                      else EMPTY_PLACEHOLDER)
         text = _format_ended_row(
             width,
             state=state_short(snap['state']),
             jobid=str(snap['jobid'])[:9],
-            user=str(snap['user'])[:12],
-            partition=str(snap['partition'])[:14],
+            user=str(snap['user'])[:14],
+            partition=str(snap['partition'])[:12],
             used=used_str[:9],
             limit=limit_str[:9],
-            exit_code=str(snap['returncode'])[:6],
-            resources=(snap.get('resources') or EMPTY_PLACEHOLDER)[:18],
-            name=str(snap['name'])[:25],
+            exit_code=str(snap['returncode'])[:11],
+            waited=waited_str[:9],
+            resources=(snap.get('resources') or EMPTY_PLACEHOLDER)[:20],
+            name=snap['name'],
         )
         super().__init__(u.AttrMap(u.Text(text), state_attr(snap['state'])))
 
@@ -210,12 +233,12 @@ class FinishingJobWidget(_ReadOnlyRow):
             width,
             state=state_short(state),
             jobid=str(job.job_id)[:9],
-            user=str(getattr(job, 'user_name', EMPTY_PLACEHOLDER))[:12],
-            partition=job_partition(job)[:14],
+            user=str(getattr(job, 'user_name', EMPTY_PLACEHOLDER))[:14],
+            partition=job_partition(job)[:12],
             remaining=remaining[:11],
             ran=ran[:11],
-            resources=(compact_tres(job) or EMPTY_PLACEHOLDER)[:18],
-            name=str(getattr(job, 'name', EMPTY_PLACEHOLDER) or EMPTY_PLACEHOLDER)[:25],
+            resources=(compact_tres(job) or EMPTY_PLACEHOLDER)[:20],
+            name=str(getattr(job, 'name', EMPTY_PLACEHOLDER) or EMPTY_PLACEHOLDER),
         )
         # COMPLETING (epilog/cleanup) and <5 min remaining both get warning;
         # everything else stays neutral.
@@ -241,18 +264,19 @@ class StartedJobWidget(_ReadOnlyRow):
             width,
             state=state_short(state),
             jobid=str(job.job_id)[:9],
-            user=str(getattr(job, 'user_name', EMPTY_PLACEHOLDER))[:12],
-            partition=job_partition(job)[:14],
+            user=str(getattr(job, 'user_name', EMPTY_PLACEHOLDER))[:14],
+            partition=job_partition(job)[:12],
             wait=wait_str[:10],
             ran=ran_str[:10],
-            resources=(compact_tres(job) or EMPTY_PLACEHOLDER)[:18],
-            name=str(getattr(job, 'name', EMPTY_PLACEHOLDER) or EMPTY_PLACEHOLDER)[:25],
+            tlim=time_limit_str(job)[:9],
+            resources=(compact_tres(job) or EMPTY_PLACEHOLDER)[:20],
+            name=str(getattr(job, 'name', EMPTY_PLACEHOLDER) or EMPTY_PLACEHOLDER),
         )
         super().__init__(u.AttrMap(u.Text(text), state_attr(state)))
 
 
 class AboutToStartJobWidget(u.WidgetWrap):
-    """Selectable row for a pending job in the bottom (about-to-start) section.
+    """Selectable row for a pending job in the bottom (starting-next) section.
     Cluster-wide, sorted by ETA, partition column visible."""
 
     def __init__(self, job, width=120):
@@ -300,7 +324,7 @@ class AboutToStartJobWidget(u.WidgetWrap):
 # ----- Screen -------------------------------------------------------------
 
 class ScreenViewQueue(u.WidgetWrap):
-    """Lifecycle flow: ended → finishing soon → just started → about to start."""
+    """Lifecycle flow: recently finished → finishing next → recently started → starting next."""
 
     # Vertical weights for the four sections (ended, finishing, started, about).
     SECTION_WEIGHTS = (15, 15, 15, 55)
@@ -449,13 +473,13 @@ class ScreenViewQueue(u.WidgetWrap):
         if cap:
             items = items[-cap:]
 
-        # No count in the title: it's the "most recently ended N" where N is
-        # whatever fits, same as the other dynamic sections.
-        title = SectionBanner("Just ended", width=width)
+        # No count in the title: it's the "most recently finished N" where N
+        # is whatever fits, same as the other dynamic sections.
+        title = SectionBanner("Recently finished", width=width)
         col_header = u.AttrMap(u.Text(_ended_header(width)), 'faded')
         body = [title, col_header]
         if not items:
-            body.append(u.Text(("faded", "  (no jobs ended since the view opened)")))
+            body.append(u.Text(("faded", "  (no jobs have finished since the view opened)")))
         else:
             for snap, _ts_seen in items:
                 body.append(EndedJobWidget(snap, width=width))
@@ -470,15 +494,14 @@ class ScreenViewQueue(u.WidgetWrap):
             is_completing = 'COMPLETING' in states
             if not (is_running or is_completing):
                 continue
-            # No exclusion against "Just started" — a short job (e.g. 5 min)
-            # would otherwise spend its entire life in "Just started" and
-            # never bubble up here. The two sections answer different
-            # questions ("what just got scheduled?" vs "what's about to
-            # finish?") and a fresh, soon-to-end job legitimately belongs
-            # in both.
+            # No exclusion against "Recently started" — a short job (e.g. 5
+            # min) would otherwise spend its entire life there and never
+            # bubble up here. The two sections answer different questions
+            # ("what just got scheduled?" vs "what's about to finish?") and
+            # a fresh, soon-to-end job legitimately belongs in both.
             if is_completing:
                 # Epilog/cleanup — sort to the very top of the section since
-                # they're the closest to vanishing into "Just ended".
+                # they're the closest to vanishing into "Recently finished".
                 candidates.append((-1, j))
                 continue
             end_ts = ts(getattr(j, 'end_time', {}))
@@ -493,7 +516,7 @@ class ScreenViewQueue(u.WidgetWrap):
         # No count in the title: this section is always "the next N jobs to
         # finish" where N is whatever fits in the window — the total number
         # of running jobs would just be misleading.
-        title = SectionBanner("Finishing soon", width=width)
+        title = SectionBanner("Finishing next", width=width)
         col_header = u.AttrMap(u.Text(_finishing_header(width)), 'faded')
         body = [title, col_header]
         if not candidates:
@@ -521,7 +544,7 @@ class ScreenViewQueue(u.WidgetWrap):
 
         # No count in the title: this section is always "the most recently
         # started N jobs" where N is whatever fits in the window.
-        title = SectionBanner("Just started", width=width)
+        title = SectionBanner("Recently started", width=width)
         col_header = u.AttrMap(u.Text(_started_header(width)), 'faded')
         body = [title, col_header]
         if not candidates:
@@ -556,7 +579,7 @@ class ScreenViewQueue(u.WidgetWrap):
             soonest = f'   soonest: {format_eta_seconds(soonest_diff)}'
         self.about_summary.set_text([
             ('jobheader', '  '),
-            ('jobheader', f'About to start: {len(pending_with_eta)}'),
+            ('jobheader', f'Starting next: {len(pending_with_eta)}'),
             f'   no ETA: {len(pending_without)}',
             f'   total pending: {total_pending}',
             soonest,
@@ -576,7 +599,7 @@ class ScreenViewQueue(u.WidgetWrap):
         self.about_walker.extend(widgets)
         self._restore_about_focus()
 
-    # --- Focus / keypress (about-to-start section) -------------------------
+    # --- Focus / keypress (starting-next section) --------------------------
 
     def _restore_about_focus(self):
         if not len(self.about_walker):
