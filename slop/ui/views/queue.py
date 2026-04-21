@@ -785,8 +785,6 @@ class ScreenViewQueue(u.WidgetWrap):
     # falls back to "last selectable" (the bottom row). Doing it ourselves:
     # always land on a real row, never confuse the saved-focus state.
 
-    PAGE_STEP = 5
-
     def _section_piles(self):
         """The four section piles in display order, mirroring SECTION_WEIGHTS."""
         return (self.ended_section, self.finishing_section,
@@ -816,10 +814,9 @@ class ScreenViewQueue(u.WidgetWrap):
 
     def _restore_focus(self):
         """After a re-render, put the cursor back on the previously focused
-        job. If that job is gone, fall back to the bottom-most row in the
-        same section — matches the conveyor-belt intuition of "fresh entries
-        arrive at the bottom". If the section itself is now empty, walk
-        outward to the nearest non-empty section."""
+        job. If that job is gone, fall back to the top row in the same
+        section. If the section itself is now empty, walk outward to the
+        nearest non-empty section."""
         sections = self._section_piles()
         n = len(sections)
         start = max(0, min(self.focused_section, n - 1))
@@ -836,7 +833,7 @@ class ScreenViewQueue(u.WidgetWrap):
                 target_jid = self.focused_jobid_by_section.get(idx)
                 pos = next((i for (i, w) in rows
                             if getattr(w, 'jobid', None) == target_jid),
-                           rows[-1][0])
+                           rows[0][0])
                 sections[idx].focus_position = pos
                 try:
                     self.outer_pile.focus_position = idx
@@ -874,9 +871,8 @@ class ScreenViewQueue(u.WidgetWrap):
         try:
             cur_idx = sections[sec].focus_position
         except (IndexError, AttributeError):
-            cur_idx = rows[-1][0]
-        cur_row = next((k for k, (i, _w) in enumerate(rows) if i == cur_idx),
-                       len(rows) - 1)
+            cur_idx = rows[0][0]
+        cur_row = next((k for k, (i, _w) in enumerate(rows) if i == cur_idx), 0)
 
         if key == 'home':
             self._land(sec, sections[sec], rows[0][0])
@@ -885,8 +881,7 @@ class ScreenViewQueue(u.WidgetWrap):
             self._land(sec, sections[sec], rows[-1][0])
             return
 
-        step = 1 if key in ('up', 'down') else self.PAGE_STEP
-        delta = -step if key in ('up', 'page up') else step
+        delta = -1 if key == 'up' else 1
         new_row = cur_row + delta
 
         if 0 <= new_row < len(rows):
@@ -940,7 +935,7 @@ class ScreenViewQueue(u.WidgetWrap):
             if jid is not None:
                 self._open_job_info(jid)
             return None
-        if key in ('up', 'down', 'page up', 'page down', 'home', 'end'):
+        if key in ('up', 'down', 'home', 'end'):
             self._move_focus(key)
             return None
         return super().keypress(size, key)
