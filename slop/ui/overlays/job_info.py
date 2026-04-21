@@ -4,6 +4,7 @@ import datetime
 from slop.slurm import is_running, is_ended, is_pending, reasons
 from slop.utils import format_duration, nice_tres
 from slop.ui.constants import EMPTY_PLACEHOLDER
+from slop.ui.state_style import state_attr
 from slop.ui.widgets import rounded_box
 
 
@@ -42,6 +43,7 @@ class JobInfoOverlay(u.WidgetWrap):
 
         # Determine job state category
         state = ' '.join(job.job_state)
+        primary_state = job.job_state[0] if job.job_state else ''
         running = is_running(job)
         pending = is_pending(job)
         ended = is_ended(job)
@@ -80,15 +82,7 @@ class JobInfoOverlay(u.WidgetWrap):
         widgets.append(u.AttrMap(u.Text("STATUS"), 'jobheader'))
         widgets.append(u.Divider("─"))
 
-        # Color-code state
-        if failed:
-            widgets.append(u.AttrMap(u.Text(f"State       : {state}"), 'state_failed'))
-        elif running:
-            widgets.append(u.AttrMap(u.Text(f"State       : {state}"), 'state_running'))
-        elif pending:
-            widgets.append(u.AttrMap(u.Text(f"State       : {state}"), 'state_pending'))
-        else:
-            widgets.append(u.Text(f"State       : {state}"))
+        widgets.append(u.AttrMap(u.Text(f"State       : {state}"), state_attr(primary_state)))
 
         # State reason (important for pending jobs)
         state_reason = getattr(job, 'state_reason', 'None')

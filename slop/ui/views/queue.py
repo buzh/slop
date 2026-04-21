@@ -19,98 +19,27 @@ the Scheduler view (F8); F7 is exclusively the "what's about to change" view.
 """
 
 import urwid as u
-import datetime
-import re
 import time
-from slop.utils import format_duration, compact_tres
+from slop.utils import compact_tres
 from slop.ui.constants import EMPTY_PLACEHOLDER
 from slop.ui.widgets import rounded_box, SectionBanner
 from slop.ui.state_style import state_attr, state_short
+from slop.ui.views.queue_helpers import (
+    coarse_duration,
+    job_priority,
+    job_partition,
+    ts,
+    eta_seconds,
+    format_eta_seconds,
+    format_wait,
+    time_limit_str,
+    reason_attr,
+)
 
-
-_DUR_TOKEN_RE = re.compile(r'\d+[dhms]')
 
 # Age cap for the "Just started" tracker — entries older than this are evicted
 # even if there's still room in the section.
 STARTED_MAX_AGE = 15 * 60
-
-
-def _coarse_duration(seconds):
-    """format_duration trimmed to its top 2 units (e.g. '4d3h28m31s' → '4d3h')."""
-    s = format_duration(seconds)
-    tokens = _DUR_TOKEN_RE.findall(s)
-    return ''.join(tokens[:2]) if tokens else s
-
-
-# ----- Field accessors ----------------------------------------------------
-
-def _job_priority(job):
-    p = getattr(job, 'priority', {})
-    if isinstance(p, dict):
-        return p.get('number', 0)
-    return p if isinstance(p, int) else 0
-
-
-def _job_partition(job):
-    """First partition listed (jobs may target several comma-separated)."""
-    part = getattr(job, 'partition', '') or ''
-    return part.split(',', 1)[0].strip() or '(none)'
-
-
-def _ts(time_dict):
-    """Pull a unix timestamp out of scontrol's `{set, number}` dicts."""
-    if isinstance(time_dict, dict):
-        return time_dict.get('number', 0) or 0
-    return 0
-
-
-def _eta_seconds(start_time):
-    """Return seconds-from-now of the ETA (negative = overdue), or None if no usable ETA."""
-    if not isinstance(start_time, dict) or not start_time.get('set'):
-        return None
-    ts = start_time.get('number', 0)
-    if ts <= 0:
-        return None
-    diff = ts - datetime.datetime.now().timestamp()
-    # Slurm uses a far-future placeholder (~year 2106) when it has no estimate.
-    if diff > 365 * 24 * 3600:
-        return None
-    return diff
-
-
-def _format_eta_seconds(diff):
-    if diff is None:
-        return "Unknown"
-    if diff < -60:
-        return "overdue"
-    if diff < 60:
-        return "now"
-    return f"in {_coarse_duration(int(diff))}"
-
-
-def _format_wait(submit_time):
-    if not isinstance(submit_time, dict) or not submit_time.get('set'):
-        return EMPTY_PLACEHOLDER
-    submit = datetime.datetime.fromtimestamp(submit_time['number'])
-    wait = int((datetime.datetime.now() - submit).total_seconds())
-    return _coarse_duration(wait)
-
-
-def _time_limit_str(job):
-    tl = getattr(job, 'time_limit', {})
-    if isinstance(tl, dict) and tl.get('set'):
-        return _coarse_duration(tl.get('number', 0) * 60)
-    return EMPTY_PLACEHOLDER
-
-
-def _reason_attr(reason):
-    if reason in ('Priority', 'Resources'):
-        return 'normal'
-    if reason in ('Dependency', 'JobHeldUser', 'JobHeldAdmin', 'BeginTime'):
-        return 'warning'
-    if 'NotAvail' in reason or 'Invalid' in reason:
-        return 'error'
-    return 'normal'
 
 
 # ----- Lifecycle helpers --------------------------------------------------
@@ -122,11 +51,11 @@ def _snapshot_job(job):
         'jobid': job.job_id,
         'name': (getattr(job, 'name', None) or EMPTY_PLACEHOLDER),
         'user': getattr(job, 'user_name', EMPTY_PLACEHOLDER),
-        'partition': _job_partition(job),
+        'partition': job_partition(job),
         'state': state,
-        'submit_ts': _ts(getattr(job, 'submit_time', {})),
-        'start_ts': _ts(getattr(job, 'start_time', {})),
-        'end_ts': _ts(getattr(job, 'end_time', {})),
+        'submit_ts': ts(getattr(job, 'submit_time', {})),
+        'start_ts': ts(getattr(job, 'start_time', {})),
+        'end_ts': ts(getattr(job, 'end_time', {})),
         'time_limit_min': (getattr(job, 'time_limit', {}).get('number', 0)
                            if isinstance(getattr(job, 'time_limit', {}), dict)
                            and getattr(job, 'time_limit', {}).get('set') else 0),
@@ -210,11 +139,11 @@ class _ReadOnlyRow(u.WidgetWrap):
 
 class EndedJobWidget(_ReadOnlyRow):
     def __init__(self, snap, width=120):
-        used_str = (_coarse_duration(int(snap['end_ts'] - snap['start_ts']))
+        used_str = (coarse_duration(int(snap['end_ts'] - snap['start_ts']))
                     if snap['end_ts'] and snap['start_ts']
                     and snap['end_ts'] >= snap['start_ts']
                     else EMPTY_PLACEHOLDER)
-        limit_str = (_coarse_duration(snap['time_limit_min'] * 60)
+        limit_str = (coarse_duration(snap['time_limit_min'] * 60)
                      if snap['time_limit_min'] else EMPTY_PLACEHOLDER)
         text = _format_ended_row(
             width,
@@ -233,12 +162,12 @@ class EndedJobWidget(_ReadOnlyRow):
 
 class FinishingJobWidget(_ReadOnlyRow):
     def __init__(self, job, width=120):
-        end_ts = _ts(getattr(job, 'end_time', {}))
-        start_ts = _ts(getattr(job, 'start_time', {}))
+        end_ts = ts(getattr(job, 'end_time', {}))
+        start_ts = ts(getattr(job, 'start_time', {}))
         now = time.time()
-        remaining = (_coarse_duration(int(end_ts - now))
+        remaining = (coarse_duration(int(end_ts - now))
                      if end_ts > now else EMPTY_PLACEHOLDER)
-        ran = (_coarse_duration(int(now - start_ts))
+        ran = (coarse_duration(int(now - start_ts))
                if start_ts and now >= start_ts else EMPTY_PLACEHOLDER)
         state = job.job_state[0] if getattr(job, 'job_state', None) else 'R'
         text = _format_finishing_row(
@@ -246,7 +175,7 @@ class FinishingJobWidget(_ReadOnlyRow):
             state=state_short(state),
             jobid=str(job.job_id)[:9],
             user=str(getattr(job, 'user_name', EMPTY_PLACEHOLDER))[:12],
-            partition=_job_partition(job)[:14],
+            partition=job_partition(job)[:14],
             remaining=remaining[:11],
             ran=ran[:11],
             resources=(compact_tres(job) or EMPTY_PLACEHOLDER)[:18],
@@ -260,11 +189,11 @@ class FinishingJobWidget(_ReadOnlyRow):
 class StartedJobWidget(_ReadOnlyRow):
     def __init__(self, snap, width=120):
         now = time.time()
-        wait_str = (_coarse_duration(int(snap['start_ts'] - snap['submit_ts']))
+        wait_str = (coarse_duration(int(snap['start_ts'] - snap['submit_ts']))
                     if snap['start_ts'] and snap['submit_ts']
                     and snap['start_ts'] >= snap['submit_ts']
                     else EMPTY_PLACEHOLDER)
-        ran_str = (_coarse_duration(int(now - snap['start_ts']))
+        ran_str = (coarse_duration(int(now - snap['start_ts']))
                    if snap['start_ts'] and now >= snap['start_ts']
                    else EMPTY_PLACEHOLDER)
         text = _format_started_row(
@@ -299,15 +228,15 @@ class AboutToStartJobWidget(u.WidgetWrap):
 
     def _build(self):
         job = self.job
-        diff = _eta_seconds(getattr(job, 'start_time', {}))
-        eta = _format_eta_seconds(diff)
-        priority = _job_priority(job)
+        diff = eta_seconds(getattr(job, 'start_time', {}))
+        eta = format_eta_seconds(diff)
+        priority = job_priority(job)
         reason = getattr(job, 'state_reason', EMPTY_PLACEHOLDER) or EMPTY_PLACEHOLDER
         user = getattr(job, 'user_name', EMPTY_PLACEHOLDER)
-        partition = _job_partition(job)
+        partition = job_partition(job)
         resources = compact_tres(job) or EMPTY_PLACEHOLDER
-        tlim = _time_limit_str(job)
-        wait = _format_wait(getattr(job, 'submit_time', {}))
+        tlim = time_limit_str(job)
+        wait = format_wait(getattr(job, 'submit_time', {}))
         name = job.name or EMPTY_PLACEHOLDER
 
         text = _format_about_row(
@@ -323,7 +252,7 @@ class AboutToStartJobWidget(u.WidgetWrap):
         if diff is not None and diff < 300:
             attr = 'success'
         else:
-            attr = _reason_attr(reason)
+            attr = reason_attr(reason)
         return u.AttrMap(u.Text(text), attr, 'normal_selected')
 
 
@@ -519,7 +448,7 @@ class ScreenViewQueue(u.WidgetWrap):
                 continue
             if j.job_id in self.started_tracker:
                 continue
-            end_ts = _ts(getattr(j, 'end_time', {}))
+            end_ts = ts(getattr(j, 'end_time', {}))
             if end_ts <= 0:
                 continue
             remaining = end_ts - now
@@ -560,7 +489,7 @@ class ScreenViewQueue(u.WidgetWrap):
         for job in self.jobs.jobs:
             if 'PENDING' not in (getattr(job, 'job_state', None) or []):
                 continue
-            diff = _eta_seconds(getattr(job, 'start_time', {}))
+            diff = eta_seconds(getattr(job, 'start_time', {}))
             if diff is None:
                 pending_without.append(job)
             else:
@@ -571,7 +500,7 @@ class ScreenViewQueue(u.WidgetWrap):
         soonest = ''
         if pending_with_eta:
             soonest_diff = pending_with_eta[0][0]
-            soonest = f'   soonest: {_format_eta_seconds(soonest_diff)}'
+            soonest = f'   soonest: {format_eta_seconds(soonest_diff)}'
         self.about_summary.set_text([
             ('jobheader', '  '),
             ('jobheader', f'About to start: {len(pending_with_eta)}'),

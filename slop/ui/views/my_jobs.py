@@ -200,7 +200,6 @@ class ScreenViewMyJobs(u.WidgetWrap):
             'COMPLETED': True,
             'FAILED': True,
             'OTHER': True,
-            'HISTORY': True  # History section (from sacct)
         }
         self.calculate_jobs_per_section()
 
@@ -289,14 +288,8 @@ class ScreenViewMyJobs(u.WidgetWrap):
         # Get available width (40% of screen for left panel)
         available_width = int(self.main_screen.width * 0.40) - 3 if hasattr(self.main_screen, 'width') else 50
 
-        # Icons for state headers
-        state_icons = {
-            'RUNNING': '▶ RUNNING',
-            'PENDING': '⏸ PENDING',
-            'COMPLETED': '✓ COMPLETED',
-            'FAILED': '✗ FAILED/TIMEOUT',
-            'OTHER': '• OTHER'
-        }
+        # 'FAILED' bucket also covers TIMEOUT; the header keeps the legacy label.
+        section_labels = {'FAILED': 'FAILED/TIMEOUT'}
 
         # Show jobs grouped by state - most important first (only if user has current jobs)
         if user_jobs:
@@ -308,7 +301,9 @@ class ScreenViewMyJobs(u.WidgetWrap):
 
                     # Modern section header with expand/collapse indicator
                     expand_indicator = '▼' if not collapsed else '▶'
-                    widgets.append(SectionHeader(f"{expand_indicator} {state_icons[state]} ({total_count})"))
+                    label = section_labels.get(state, state)
+                    icon = state_icon(state, style='detail')
+                    widgets.append(SectionHeader(f"{expand_indicator} {icon} {label} ({total_count})"))
 
                     # Sort jobs
                     sorted_jobs = sorted(state_jobs, key=lambda j: j.job_id, reverse=True)

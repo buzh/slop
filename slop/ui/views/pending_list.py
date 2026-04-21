@@ -11,60 +11,28 @@ focus state across rebuilds, and intercepts e/Enter/Space when focused.
 """
 
 import urwid as u
-import datetime
-import re
-from slop.utils import format_duration
 from slop.ui.constants import EMPTY_PLACEHOLDER
 from slop.ui.widgets import SectionBanner
-
-
-_DUR_TOKEN_RE = re.compile(r'\d+[dhms]')
-
-
-def _coarse_duration(seconds):
-    """format_duration trimmed to its top 2 units (e.g. '4d3h28m31s' → '4d3h')."""
-    s = format_duration(seconds)
-    tokens = _DUR_TOKEN_RE.findall(s)
-    return ''.join(tokens[:2]) if tokens else s
-
-
-def _job_priority(job):
-    p = getattr(job, 'priority', {})
-    if isinstance(p, dict):
-        return p.get('number', 0)
-    return p if isinstance(p, int) else 0
-
-
-def _job_partition(job):
-    """First partition listed (jobs may target several comma-separated)."""
-    part = getattr(job, 'partition', '') or ''
-    return part.split(',', 1)[0].strip() or '(none)'
+from slop.ui.views.queue_helpers import (
+    coarse_duration,
+    job_priority,
+    job_partition,
+    eta_seconds,
+    format_eta_seconds,
+    format_wait,
+    time_limit_str,
+    reason_attr,
+)
 
 
 def _format_eta(start_time):
-    if not isinstance(start_time, dict) or not start_time.get('set'):
-        return EMPTY_PLACEHOLDER
-    ts = start_time.get('number', 0)
-    if ts == 0:
-        return EMPTY_PLACEHOLDER
-    diff = ts - datetime.datetime.now().timestamp()
-    # Slurm uses far-future placeholder dates (~year 2106) when it has no
-    # estimate; treat anything > 1y out as "Unknown" rather than a useful ETA.
-    if diff > 365 * 24 * 3600:
-        return "Unknown"
-    if diff < -60:
-        return "overdue"
-    if diff < 60:
-        return "now"
-    return f"in {_coarse_duration(int(diff))}"
+    """Pending-list flavor of ETA formatting: uses EMPTY_PLACEHOLDER for unknown
+    (the F8 column is narrow; the verbose 'Unknown' would push the layout)."""
+    return format_eta_seconds(eta_seconds(start_time), unknown=EMPTY_PLACEHOLDER)
 
 
-def _format_wait(submit_time):
-    if not isinstance(submit_time, dict) or not submit_time.get('set'):
-        return EMPTY_PLACEHOLDER
-    submit = datetime.datetime.fromtimestamp(submit_time['number'])
-    wait = int((datetime.datetime.now() - submit).total_seconds())
-    return _coarse_duration(wait)
+def _has_eta(job):
+    return eta_seconds(getattr(job, 'start_time', {})) is not None
 
 
 def _size_indicator(job):
@@ -81,34 +49,6 @@ def _size_indicator(job):
     if core_hours < 1000:
         return "▪▪"
     return "▪▪▪"
-
-
-def _time_limit_str(job):
-    tl = getattr(job, 'time_limit', {})
-    if isinstance(tl, dict) and tl.get('set'):
-        return _coarse_duration(tl.get('number', 0) * 60)
-    return EMPTY_PLACEHOLDER
-
-
-def _has_eta(job):
-    st = getattr(job, 'start_time', {})
-    if not (isinstance(st, dict) and st.get('set')):
-        return False
-    ts = st.get('number', 0)
-    if ts <= 0:
-        return False
-    diff = ts - datetime.datetime.now().timestamp()
-    return diff <= 365 * 24 * 3600
-
-
-def _reason_attr(reason):
-    if reason in ('Priority', 'Resources'):
-        return 'normal'
-    if reason in ('Dependency', 'JobHeldUser', 'JobHeldAdmin', 'BeginTime'):
-        return 'warning'
-    if 'NotAvail' in reason or 'Invalid' in reason:
-        return 'error'
-    return 'normal'
 
 
 def _format_row(width, *, rank, priority, eta, wait, reason, user, size, tlim, name):
@@ -152,13 +92,13 @@ class QueueJobWidget(u.WidgetWrap):
 
     def _build(self):
         job = self.job
-        priority = _job_priority(job)
+        priority = job_priority(job)
         eta = _format_eta(getattr(job, 'start_time', {}))
-        wait = _format_wait(getattr(job, 'submit_time', {}))
+        wait = format_wait(getattr(job, 'submit_time', {}))
         reason = getattr(job, 'state_reason', EMPTY_PLACEHOLDER) or EMPTY_PLACEHOLDER
         user = getattr(job, 'user_name', EMPTY_PLACEHOLDER)
         size = _size_indicator(job)
-        tlim = _time_limit_str(job)
+        tlim = time_limit_str(job)
         name = job.name or EMPTY_PLACEHOLDER
 
         text = _format_row(
@@ -166,7 +106,7 @@ class QueueJobWidget(u.WidgetWrap):
             eta=eta[:13], wait=wait[:8], reason=reason[:18],
             user=user[:10], size=size, tlim=tlim[:11], name=name[:40],
         )
-        return u.AttrMap(u.Text(text), _reason_attr(reason), 'normal_selected')
+        return u.AttrMap(u.Text(text), reason_attr(reason), 'normal_selected')
 
 
 class QueueGroupWidget(u.WidgetWrap):
@@ -200,9 +140,9 @@ class QueueGroupWidget(u.WidgetWrap):
             return u.AttrMap(u.Text(line), 'faded', 'normal_selected')
 
         first = self.job_group[0]
-        priority = max(_job_priority(j) for j in self.job_group)
+        priority = max(job_priority(j) for j in self.job_group)
         eta = _format_eta(getattr(first, 'start_time', {}))
-        wait = _format_wait(getattr(first, 'submit_time', {}))
+        wait = format_wait(getattr(first, 'submit_time', {}))
         reason = getattr(first, 'state_reason', EMPTY_PLACEHOLDER) or EMPTY_PLACEHOLDER
         user = getattr(first, 'user_name', EMPTY_PLACEHOLDER)
 
@@ -216,8 +156,8 @@ class QueueGroupWidget(u.WidgetWrap):
                 durations.append(tl.get('number', 0))
         if durations:
             mn, mx = min(durations), max(durations)
-            tlim = (_coarse_duration(mn * 60) if mn == mx
-                    else f"{_coarse_duration(mn * 60)}-{_coarse_duration(mx * 60)}")
+            tlim = (coarse_duration(mn * 60) if mn == mx
+                    else f"{coarse_duration(mn * 60)}-{coarse_duration(mx * 60)}")
         else:
             tlim = EMPTY_PLACEHOLDER
 
@@ -227,7 +167,7 @@ class QueueGroupWidget(u.WidgetWrap):
             eta=eta[:13], wait=wait[:8], reason=reason[:18],
             user=user[:10], size=size, tlim=tlim[:11], name=name[:40],
         )
-        return u.AttrMap(u.Text(text), _reason_attr(reason), 'normal_selected')
+        return u.AttrMap(u.Text(text), reason_attr(reason), 'normal_selected')
 
 
 def _partition_banner(partition, total, with_eta, width):
@@ -289,7 +229,7 @@ class PendingListWidget(u.WidgetWrap):
         for job in self.jobs.jobs:
             if not (hasattr(job, 'job_state') and 'PENDING' in job.job_state):
                 continue
-            by_part.setdefault(_job_partition(job), []).append(job)
+            by_part.setdefault(job_partition(job), []).append(job)
 
         total_pending = sum(len(v) for v in by_part.values())
         total_eta = sum(1 for jobs in by_part.values() for j in jobs if _has_eta(j))
@@ -310,11 +250,11 @@ class PendingListWidget(u.WidgetWrap):
             # is the next-to-run job sitting in").
             ordered = sorted(
                 by_part.items(),
-                key=lambda kv: max(_job_priority(j) for j in kv[1]),
+                key=lambda kv: max(job_priority(j) for j in kv[1]),
                 reverse=True,
             )
             for partition, jobs in ordered:
-                jobs_sorted = sorted(jobs, key=_job_priority, reverse=True)
+                jobs_sorted = sorted(jobs, key=job_priority, reverse=True)
                 with_eta = sum(1 for j in jobs_sorted if _has_eta(j))
                 widgets.append(_partition_banner(
                     partition, len(jobs_sorted), with_eta, width,
