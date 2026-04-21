@@ -4,6 +4,7 @@ from slop.ui.views.my_jobs import ScreenViewMyJobs
 from slop.ui.views.cluster import ScreenViewCluster
 from slop.ui.views.queue import ScreenViewQueue
 from slop.ui.views.report import ScreenViewReport
+from slop.ui.views.scheduler import ScreenViewScheduler
 
 
 ScreenViewUsers = make_view(
@@ -54,4 +55,5 @@ __all__ = [
     "ScreenViewCluster",
     "ScreenViewQueue",
     "ScreenViewReport",
+    "ScreenViewScheduler",
 ]

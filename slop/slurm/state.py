@@ -211,6 +211,7 @@ reasons = {
 }
 
 job_states = {
+    "BOOT_FAIL": ("BF", "Job terminated due to launch failure (typically a hardware/boot failure)."),
     "CANCELLED": ("CA", "Job was explicitly cancelled by the user or system administrator. The job may or may not have been initiated."),
     "COMPLETED": ("CD", "Job has terminated all processes on all nodes with an exit code of zero."),
     "CONFIGURING": ("CF", "Job has been allocated resources, but are waiting for them to become ready for use (e.g. booting)."),

@@ -3,7 +3,7 @@
 import urwid as u
 from slop.ui.overlays import JobInfoOverlay
 from slop.ui.tab_completion import TabCompletionMixin
-from slop.ui.widgets import AccountUsageWidget
+from slop.ui.widgets import AccountUsageWidget, rounded_box
 from slop.ui.views.report_stats import calculate_user_stats, build_stats_widgets
 from slop.slurm.history_fetcher import HistoryFetcher
 
@@ -124,12 +124,7 @@ class ScreenViewReport(TabCompletionMixin, u.WidgetWrap):
         self.search_suggestions = u.Text("", wrap='clip')
 
         pile = u.Pile([self.search_edit, self.search_suggestions])
-        return u.LineBox(
-            u.AttrMap(u.Filler(pile, valign='top'), 'bg'),
-            title="Search User",
-            tlcorner='╭', trcorner='╮',
-            blcorner='╰', brcorner='╯',
-        )
+        return rounded_box(u.AttrMap(u.Filler(pile, valign='top'), 'bg'), title='Search User')
 
     def _build_account_panel(self):
         total_hours = sum(row.get('used', 0) for row in self.sreport_data)
@@ -152,12 +147,7 @@ class ScreenViewReport(TabCompletionMixin, u.WidgetWrap):
         if len(widgets) == 4:
             widgets.append(u.Text(("faded", "  No usage data found")))
 
-        return u.LineBox(
-            u.AttrMap(u.Filler(u.Pile(widgets), valign='top'), 'bg'),
-            title="Account Usage",
-            tlcorner='╭', trcorner='╮',
-            blcorner='╰', brcorner='╯',
-        )
+        return rounded_box(u.AttrMap(u.Filler(u.Pile(widgets), valign='top'), 'bg'), title='Account Usage')
 
     def _build_history_panel(self):
         self.header_pile = u.Pile([u.Text(("faded", "Fetching job history..."))])
@@ -174,21 +164,11 @@ class ScreenViewReport(TabCompletionMixin, u.WidgetWrap):
             ('weight', 1, u.AttrMap(self.job_listbox, 'bg')),
         ])
 
-        return u.LineBox(
-            right_content,
-            title="Job History",
-            tlcorner='╭', trcorner='╮',
-            blcorner='╰', brcorner='╯',
-        )
+        return rounded_box(right_content, title='Job History')
 
     def _build_stats_panel(self):
         self.stats_pile = u.Pile([u.Text(("faded", "Loading statistics..."))])
-        return u.LineBox(
-            u.AttrMap(u.Filler(self.stats_pile, valign='top'), 'bg'),
-            title="Job Statistics",
-            tlcorner='╭', trcorner='╮',
-            blcorner='╰', brcorner='╯',
-        )
+        return rounded_box(u.AttrMap(u.Filler(self.stats_pile, valign='top'), 'bg'), title='Job Statistics')
 
     def modified(self):
         """Handle walker modification (focus change)."""

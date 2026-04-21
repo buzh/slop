@@ -1,485 +1,966 @@
-"""Queue Status view - Shows pending jobs from the scheduler's perspective."""
+"""Queue Status view (F7) - the lifecycle "flow" of jobs.
+
+Four sections, top to bottom, mirroring the upward flow of a job:
+
+  1. Recently finished (jobs in a terminal state — CANCELLED/COMPLETED/
+                        FAILED/TIMEOUT/OOM/DEADLINE — or jobs that vanished
+                        from scontrol since the last refresh)
+  2. Finishing next    (RUNNING ranked by least time-remaining, plus any
+                        COMPLETING/CG epilog jobs pinned to the top)
+  3. Recently started  (RUNNING/COMPLETING jobs whose start_time is in the
+                        last 15 min)
+  4. Starting next     (cluster-wide pending jobs sorted by ETA)
+
+Section 1 is tracker-driven on two triggers: a job's state transitioning
+from non-terminal to terminal (`job_state_ended`) during a refresh, OR a
+job vanishing from scontrol entirely. Both triggers require us to have
+seen the job in a non-terminal state at least once — we don't surface
+jobs that were already terminal at first observation, since those finished
+before we started watching and would clutter the conveyor belt with
+ancient history. Slurm holds completed records for `MinJobAge` (default
+5 min) before purging them; the state-transition trigger surfaces a job
+immediately on completion rather than waiting for that purge. Once
+tracked, entries linger until display capacity forces eviction (FIFO). Sections 2, 3, 4 are
+recomputed each refresh from the current job set, with anything already
+in the ended tracker excluded so it doesn't double-up. Section 3 uses
+`start_time` as the source of truth — earlier versions tried to detect a
+PENDING→RUNNING state transition across two refresh ticks, which silently
+dropped jobs that scheduled fast enough to appear as RUNNING on the very
+first tick we saw them.
+
+Section 2 wins over section 3 when a short job qualifies for both: a job
+already shown in "Finishing next" is suppressed from "Recently started"
+even if that leaves the lower section under-filled. The duplicate row was
+the more confusing failure mode; an empty slot in "Recently started" reads
+fine because the job is still visible (just one row higher).
+
+The partition-grouped pending list that used to sit in section 4 now lives in
+the Scheduler view (F8); F7 is exclusively the "what's about to change" view.
+"""
 
 import urwid as u
-import datetime
-from slop.utils import format_duration
+import time
+from slop.utils import compact_tres
+from slop.ui.constants import EMPTY_PLACEHOLDER
+from slop.ui.widgets import rounded_box, SectionBanner
+from slop.ui.state_style import state_attr, state_short
+from slop.slurm.state import job_state_ended
+from slop.ui.views.queue_helpers import (
+    coarse_duration,
+    job_priority,
+    job_partition,
+    ts,
+    eta_seconds,
+    format_eta_seconds,
+    format_wait,
+    time_limit_str,
+    reason_attr,
+)
 
 
-class QueueJobWidget(u.WidgetWrap):
-    """Widget for displaying a single pending job in the queue view."""
-
-    def __init__(self, job, rank, width=None):
-        self.job = job
-        self.jobid = job.job_id
-        self.rank = rank
-        self.width = width or 120
-
-        # Build the widget
-        widget = self._build_widget()
-        super().__init__(widget)
-
-    def selectable(self):
-        return True
-
-    def keypress(self, size, key):
-        return key
-
-    def _build_widget(self):
-        """Build the job display widget."""
-        job = self.job
-
-        # Priority
-        priority = getattr(job, 'priority', {})
-        if isinstance(priority, dict):
-            priority_num = priority.get('number', 0)
-        else:
-            priority_num = priority if isinstance(priority, int) else 0
-
-        # Job size indicator (resource footprint)
-        size_indicator = self._get_size_indicator()
-
-        # Time limit
-        time_limit = getattr(job, 'time_limit', {})
-        if isinstance(time_limit, dict) and time_limit.get('set'):
-            duration_min = time_limit.get('number', 0)
-            duration_str = format_duration(duration_min * 60)
-        else:
-            duration_str = "?"
-
-        # Estimated start time
-        start_time = getattr(job, 'start_time', {})
-        eta_str = self._get_eta_string(start_time)
-
-        # Wait time
-        submit_time = getattr(job, 'submit_time', {})
-        if isinstance(submit_time, dict) and submit_time.get('set'):
-            submit = datetime.datetime.fromtimestamp(submit_time['number'])
-            now = datetime.datetime.now()
-            wait_sec = int((now - submit).total_seconds())
-            wait_str = format_duration(wait_sec)
-        else:
-            wait_str = "?"
-
-        # Reason
-        reason = getattr(job, 'state_reason', 'Unknown')
-
-        # Resource summary
-        resource_str = self._get_resource_summary()
-
-        # QOS
-        qos = getattr(job, 'qos', '?')
-
-        # Username
-        username = getattr(job, 'user_name', '?')
-
-        # Format based on width
-        if self.width < 100:
-            # Narrow
-            line = f"{self.rank:>3} {priority_num:>7} {size_indicator:<3} {duration_str:>7} {username[:8]:<8} {job.name[:15]:<15}"
-        elif self.width < 140:
-            # Medium
-            line = f"{self.rank:>3} {priority_num:>7} {size_indicator:<3} {duration_str:>7} {eta_str[:14]:<14} {username[:10]:<10} {reason[:12]:<12} {job.name[:20]:<20}"
-        else:
-            # Wide
-            line = f"{self.rank:>3} {priority_num:>7} {size_indicator:<3} {duration_str:>7} {eta_str[:14]:<14} {wait_str[:11]:>11} {username[:10]:<10} {qos[:8]:<8} {reason[:15]:<15} {resource_str[:18]:<18} {job.name[:25]:<25}"
-
-        # Color based on priority/reason
-        attr = self._get_color_attr(reason)
-        return u.AttrMap(u.Text(line), attr, 'normal_selected')
-
-    def _get_size_indicator(self):
-        """Get visual size indicator based on resource footprint."""
-        job = self.job
-
-        # Get node count
-        node_count = getattr(job, 'node_count', {})
-        if isinstance(node_count, dict):
-            nodes = node_count.get('number', 1)
-        else:
-            nodes = node_count if isinstance(node_count, int) else 1
-
-        # Get CPU count
-        cpus_obj = getattr(job, 'cpus', {})
-        if isinstance(cpus_obj, dict):
-            cpus = cpus_obj.get('number', 1)
-        else:
-            cpus = cpus_obj if isinstance(cpus_obj, int) else 1
-
-        # Get time limit (in minutes)
-        time_limit = getattr(job, 'time_limit', {})
-        if isinstance(time_limit, dict) and time_limit.get('set'):
-            duration_min = time_limit.get('number', 60)
-        else:
-            duration_min = 60
-
-        # Calculate "resource-hours" footprint
-        # Small job: <100 core-hours
-        # Medium job: 100-1000 core-hours
-        # Large job: >1000 core-hours
-        core_hours = (cpus * duration_min) / 60
-
-        if core_hours < 100:
-            return "▪"  # Small - can backfill easily
-        elif core_hours < 1000:
-            return "▪▪"  # Medium
-        else:
-            return "▪▪▪"  # Large - needs reserved slot
-
-    def _get_eta_string(self, start_time):
-        """Get estimated time to start as a human-readable string."""
-        if not isinstance(start_time, dict) or not start_time.get('set'):
-            return "unknown"
-
-        start_timestamp = start_time.get('number', 0)
-        if start_timestamp == 0:
-            return "unknown"
-
-        start_dt = datetime.datetime.fromtimestamp(start_timestamp)
-        now = datetime.datetime.now()
-
-        # If in the past or very soon, say "now"
-        diff_sec = (start_dt - now).total_seconds()
-        if diff_sec < 60:
-            return "now"
-
-        # Future time
-        return f"in {format_duration(int(diff_sec))}"
-
-    def _get_resource_summary(self):
-        """Get compact resource summary."""
-        job = self.job
-
-        # Nodes
-        node_count = getattr(job, 'node_count', {})
-        if isinstance(node_count, dict):
-            nodes = node_count.get('number', 0)
-        else:
-            nodes = node_count if isinstance(node_count, int) else 0
-
-        # CPUs
-        cpus_obj = getattr(job, 'cpus', {})
-        if isinstance(cpus_obj, dict):
-            cpus = cpus_obj.get('number', 0)
-        else:
-            cpus = cpus_obj if isinstance(cpus_obj, int) else 0
-
-        # Memory (try memory_per_node first, then memory_per_cpu)
-        mem_per_node = getattr(job, 'memory_per_node', {})
-        mem_per_cpu = getattr(job, 'memory_per_cpu', {})
-
-        if isinstance(mem_per_node, dict) and mem_per_node.get('set'):
-            mem_mb = mem_per_node.get('number', 0)
-            mem_str = f"{mem_mb // 1024}GB" if mem_mb > 1024 else f"{mem_mb}MB"
-        elif isinstance(mem_per_cpu, dict) and mem_per_cpu.get('set'):
-            mem_mb = mem_per_cpu.get('number', 0) * cpus
-            mem_str = f"{mem_mb // 1024}GB" if mem_mb > 1024 else f"{mem_mb}MB"
-        else:
-            mem_str = "?"
-
-        # Check for GPUs in tres_req_str
-        tres_str = getattr(job, 'tres_req_str', '')
-        gpu_count = 0
-        if 'gres/gpu=' in tres_str:
-            # Simple parsing - look for gres/gpu=N
-            import re
-            match = re.search(r'gres/gpu=(\d+)', tres_str)
-            if match:
-                gpu_count = int(match.group(1))
-
-        parts = []
-        if nodes > 0:
-            parts.append(f"{nodes}n")
-        if cpus > 0:
-            parts.append(f"{cpus}c")
-        if mem_str != "?":
-            parts.append(mem_str)
-        if gpu_count > 0:
-            parts.append(f"{gpu_count}gpu")
-
-        return " ".join(parts) if parts else "?"
-
-    def _get_color_attr(self, reason):
-        """Get color attribute based on job reason."""
-        # Jobs that can backfill - normal
-        if reason in ['Priority', 'Resources']:
-            return 'normal'
-        # Jobs with dependencies or holds - warning
-        elif reason in ['Dependency', 'JobHeldUser', 'JobHeldAdmin']:
-            return 'warning'
-        # Jobs with issues - error
-        elif 'NotAvail' in reason or 'Invalid' in reason:
-            return 'error'
-        else:
-            return 'normal'
+# How long after start_time a job still counts as "just started".
+STARTED_MAX_AGE = 15 * 60
+# Tolerance for start_time being slightly in the future relative to our local
+# clock. Slurm sometimes reports a scheduler-side timestamp a few seconds
+# ahead of the host's wall clock; without this tolerance the job is rejected
+# from "Recently started" and silently falls into "Finishing next".
+STARTED_FUTURE_TOLERANCE = 5 * 60
+# Window over which the "Recently finished" section accumulates summary
+# stats. Independent of the display row count so we can summarize a longer
+# span than fits on screen.
+ENDED_STATS_WINDOW = 60 * 60
 
 
-class QueueGroupWidget(u.WidgetWrap):
-    """Widget for a collapsed group of jobs (same user + reason)."""
+# ----- Lifecycle helpers --------------------------------------------------
 
-    def __init__(self, start_rank, end_rank, job_group, width=None):
-        self.start_rank = start_rank
-        self.end_rank = end_rank
-        self.job_group = job_group  # List of jobs in this group
-        self.group_key = f"{start_rank}-{end_rank}"  # Unique key for tracking expansion
-        self.width = width or 120
+def _is_just_started(job, now):
+    """RUNNING/COMPLETING and started within the last STARTED_MAX_AGE seconds.
 
-        # Build the widget
-        widget = self._build_widget()
-        super().__init__(widget)
+    Replaces the old PENDING→RUNNING transition tracker, which missed jobs
+    that scheduled inside a single refresh interval (we never observed them
+    in the PENDING state, so the transition check stayed false forever).
+    """
+    states = getattr(job, 'job_state', None) or []
+    if 'RUNNING' not in states and 'COMPLETING' not in states:
+        return False
+    start_ts = ts(getattr(job, 'start_time', {}))
+    if start_ts <= 0:
+        return False
+    age = now - start_ts
+    return -STARTED_FUTURE_TOLERANCE <= age <= STARTED_MAX_AGE
+
+
+def _snapshot_job(job):
+    """Capture enough data to render a row even after the job leaves scontrol."""
+    state = job.job_state[0] if getattr(job, 'job_state', None) else 'UNKNOWN'
+    return {
+        'jobid': job.job_id,
+        'name': (getattr(job, 'name', None) or EMPTY_PLACEHOLDER),
+        'user': getattr(job, 'user_name', EMPTY_PLACEHOLDER),
+        'account': getattr(job, 'account', EMPTY_PLACEHOLDER) or EMPTY_PLACEHOLDER,
+        'partition': job_partition(job),
+        'nodes': getattr(job, 'nodes', '') or EMPTY_PLACEHOLDER,
+        'state': state,
+        'submit_ts': ts(getattr(job, 'submit_time', {})),
+        'start_ts': ts(getattr(job, 'start_time', {})),
+        'end_ts': ts(getattr(job, 'end_time', {})),
+        'time_limit_min': (getattr(job, 'time_limit', {}).get('number', 0)
+                           if isinstance(getattr(job, 'time_limit', {}), dict)
+                           and getattr(job, 'time_limit', {}).get('set') else 0),
+        'resources': compact_tres(job),
+        'returncode': getattr(job, 'returncode', EMPTY_PLACEHOLDER),
+    }
+
+
+def _format_clock_ts(epoch_ts):
+    """`HH:MM` if today, else `dd/mm@HH:MM`.
+
+    The `@` glues the date to the time so the row reads cleanly when the
+    next column is also `HH:MM` — a plain space looks like another column.
+    """
+    if not epoch_ts:
+        return EMPTY_PLACEHOLDER
+    import datetime as _dt
+    t = _dt.datetime.fromtimestamp(int(epoch_ts))
+    if t.date() == _dt.datetime.now().date():
+        return t.strftime('%H:%M')
+    return t.strftime('%d/%m@%H:%M')
+
+
+# ----- Column layouts -----------------------------------------------------
+#
+# Each layout is a list of (label, align, kind, size, wrap) tuples shared by
+# the row builder and the header builder so columns line up automatically.
+#   label: header text
+#   align: 'left' or 'right' (passed to the cell's Text widget)
+#   kind:  'given' (fixed N chars) or 'weight' (proportional share)
+#   size:  N (chars for 'given', relative weight for 'weight')
+#   wrap:  'clip' or 'ellipsis' for overflow
+#
+# Weight columns absorb the leftover horizontal space — the row scales with
+# the terminal instead of being truncated at hard-coded widths.
+
+# Shared column widths so the same column lands at the same horizontal
+# position in every section it appears in. Only `Name` is weighted — it
+# soaks up the residual width so wider terminals show more of the job
+# name. The User column doubles as account display: "username (project)"
+# instead of two separate columns.
+_JOBID_W     = 10
+_USER_W      = 28
+_PARTITION_W = 12
+_RESOURCES_W = 22
+_NODES_W     = 14
+
+USER      = ('User',      'left', 'given', _USER_W,      'ellipsis')
+PARTITION = ('Partition', 'left', 'given', _PARTITION_W, 'ellipsis')
+RESOURCES = ('Resources', 'left', 'given', _RESOURCES_W, 'ellipsis')
+NODES     = ('Nodes',     'left', 'given', _NODES_W,     'ellipsis')
+NAME      = ('Name',      'left', 'weight', 1,           'ellipsis')
+
+
+def _user_account(user, account):
+    """Render a user with their account folded in as 'user (account)'."""
+    if not account or account == EMPTY_PLACEHOLDER:
+        return user or EMPTY_PLACEHOLDER
+    return f"{user} ({account})"
+
+
+ENDED_LAYOUT = [
+    ('St',     'right', 'given', 3,         'clip'),
+    ('Job ID', 'right', 'given', _JOBID_W,  'clip'),
+    USER, PARTITION,
+    ('Submitted',      'left',  'given', 11, 'clip'),
+    ('Ended',          'left',  'given', 11, 'clip'),
+    ('Requested/Used', 'right', 'given', 16, 'clip'),
+    ('Exit',           'left',  'given', 11, 'clip'),
+    ('Waited',         'right', 'given', 9,  'clip'),
+    RESOURCES, NODES, NAME,
+]
+
+FINISHING_LAYOUT = [
+    ('St',     'right', 'given', 3,         'clip'),
+    ('Job ID', 'right', 'given', _JOBID_W,  'clip'),
+    USER, PARTITION,
+    ('Remaining', 'right', 'given', 12, 'clip'),
+    ('Ran',       'right', 'given', 11, 'clip'),
+    RESOURCES, NODES, NAME,
+]
+
+STARTED_LAYOUT = [
+    ('St',     'right', 'given', 3,         'clip'),
+    ('Job ID', 'right', 'given', _JOBID_W,  'clip'),
+    USER, PARTITION,
+    ('Waited', 'right', 'given', 10, 'clip'),
+    ('Ran',    'right', 'given', 10, 'clip'),
+    ('Limit',  'right', 'given',  9, 'clip'),
+    RESOURCES, NODES, NAME,
+]
+
+# Pending jobs lead with ETA — that's the field a scheduler-watcher cares
+# about most — and have no St / Nodes (they all share state PD and aren't
+# allocated yet).
+ABOUT_LAYOUT = [
+    ('ETA',       'left',  'given', 11,        'clip'),
+    ('Job ID',    'right', 'given', _JOBID_W,  'clip'),
+    USER, PARTITION,
+    ('Priority',  'right', 'given',  8, 'clip'),
+    ('Reason',    'left',  'given', 14, 'clip'),
+    ('Time',      'right', 'given',  9, 'clip'),
+    ('Waited',    'right', 'given',  9, 'clip'),
+    RESOURCES, NAME,
+]
+
+
+def _row(layout, values):
+    """Build a `u.Columns` row from `values` paralleling `layout`."""
+    cols = []
+    for (_label, align, kind, size, wrap), value in zip(layout, values):
+        t = u.Text(str(value), align=align)
+        t.set_wrap_mode(wrap)
+        cols.append((kind, size, t))
+    return u.Columns(cols, dividechars=1)
+
+
+def _header(layout):
+    """Build the column-header row for `layout`. Each title inherits its
+    column's data alignment so the label sits directly over the values it
+    describes — header right-edge above number right-edge for numeric
+    columns, left-aligned text above left-aligned text."""
+    return _row(layout, [col[0] for col in layout])
+
+
+# ----- Widgets ------------------------------------------------------------
+
+class _JobRow(u.WidgetWrap):
+    """Base for selectable job rows. Subclasses build the inner widget and
+    pass the job id (or snapshot id for ended jobs) to ``__init__`` so the
+    screen-level keypress handler can open JobInfoOverlay on Enter."""
+
+    def __init__(self, w, jobid):
+        self.jobid = jobid
+        super().__init__(w)
 
     def selectable(self):
         return True
 
     def keypress(self, size, key):
+        # Let the parent Pile / screen handler decide what to do with
+        # everything (including 'enter'); rows themselves are dumb labels.
         return key
 
-    def _build_widget(self):
-        """Build the group summary widget."""
-        # Get representative job (first in group)
-        job = self.job_group[0]
-        count = len(self.job_group)
 
-        # Get shared attributes
-        username = getattr(job, 'user_name', '?')
-        reason = getattr(job, 'state_reason', 'Unknown')
+class EndedJobWidget(_JobRow):
+    def __init__(self, snap):
+        used_str = (coarse_duration(int(snap['end_ts'] - snap['start_ts']))
+                    if snap['end_ts'] and snap['start_ts']
+                    and snap['end_ts'] >= snap['start_ts']
+                    else EMPTY_PLACEHOLDER)
+        limit_str = (coarse_duration(snap['time_limit_min'] * 60)
+                     if snap['time_limit_min'] else EMPTY_PLACEHOLDER)
+        waited_str = (coarse_duration(int(snap['start_ts'] - snap['submit_ts']))
+                      if snap['start_ts'] and snap['submit_ts']
+                      and snap['start_ts'] >= snap['submit_ts']
+                      else EMPTY_PLACEHOLDER)
+        values = [
+            state_short(snap['state']),
+            snap['jobid'],
+            _user_account(snap['user'], snap.get('account')),
+            snap['partition'],
+            _format_clock_ts(snap['submit_ts']),
+            _format_clock_ts(snap['end_ts']),
+            f"{limit_str}/{used_str}",
+            snap['returncode'],
+            waited_str,
+            snap.get('resources') or EMPTY_PLACEHOLDER,
+            snap.get('nodes') or EMPTY_PLACEHOLDER,
+            snap['name'],
+        ]
+        super().__init__(
+            u.AttrMap(_row(ENDED_LAYOUT, values),
+                      state_attr(snap['state']), 'normal_selected'),
+            snap['jobid'],
+        )
 
-        # Priority range
-        priorities = []
-        for j in self.job_group:
-            priority = getattr(j, 'priority', {})
-            if isinstance(priority, dict):
-                priorities.append(priority.get('number', 0))
-            else:
-                priorities.append(priority if isinstance(priority, int) else 0)
 
-        priority_min = min(priorities) if priorities else 0
-        priority_max = max(priorities) if priorities else 0
-        # Just show max priority to fit in column width
-        priority_num = priority_max
-
-        # Size indicator - use most common
-        sizes = []
-        for j in self.job_group:
-            widget = QueueJobWidget(j, 0, width=self.width)
-            sizes.append(widget._get_size_indicator())
-        size_indicator = max(set(sizes), key=sizes.count) if sizes else "▪"
-
-        # Time range
-        durations = []
-        for j in self.job_group:
-            time_limit = getattr(j, 'time_limit', {})
-            if isinstance(time_limit, dict) and time_limit.get('set'):
-                durations.append(time_limit.get('number', 0))
-
-        if durations:
-            min_dur = min(durations)
-            max_dur = max(durations)
-            if min_dur == max_dur:
-                duration_str = format_duration(min_dur * 60)
-            else:
-                duration_str = f"{format_duration(min_dur * 60)}-{format_duration(max_dur * 60)}"
+class FinishingJobWidget(_JobRow):
+    def __init__(self, job):
+        end_ts = ts(getattr(job, 'end_time', {}))
+        start_ts = ts(getattr(job, 'start_time', {}))
+        now = time.time()
+        states = getattr(job, 'job_state', None) or []
+        is_completing = 'COMPLETING' in states
+        if is_completing:
+            remaining = 'wrapping up'
+        elif end_ts > now:
+            remaining = coarse_duration(int(end_ts - now))
         else:
-            duration_str = "?"
-
-        # Rank - show start rank in the column, add range info to name
-        rank_num = self.start_rank
-
-        # Add range indicator to name if group spans multiple ranks
-        if self.start_rank == self.end_rank:
-            name_col = f"[{count} jobs]"
+            remaining = EMPTY_PLACEHOLDER
+        ran = (coarse_duration(int(now - start_ts))
+               if start_ts and now >= start_ts else EMPTY_PLACEHOLDER)
+        state = states[0] if states else 'R'
+        values = [
+            state_short(state),
+            job.job_id,
+            _user_account(getattr(job, 'user_name', EMPTY_PLACEHOLDER),
+                          getattr(job, 'account', None)),
+            job_partition(job),
+            remaining,
+            ran,
+            compact_tres(job) or EMPTY_PLACEHOLDER,
+            getattr(job, 'nodes', '') or EMPTY_PLACEHOLDER,
+            getattr(job, 'name', EMPTY_PLACEHOLDER) or EMPTY_PLACEHOLDER,
+        ]
+        # COMPLETING (epilog/cleanup) and <5 min remaining both get warning;
+        # everything else stays neutral.
+        if is_completing or (end_ts and end_ts - now < 300):
+            attr = 'warning'
         else:
-            name_col = f"[{count} jobs #{self.start_rank}-{self.end_rank}]"
+            attr = 'normal'
+        super().__init__(
+            u.AttrMap(_row(FINISHING_LAYOUT, values), attr, 'normal_selected'),
+            job.job_id,
+        )
 
-        # Format based on width - match individual job column widths exactly
-        if self.width < 100:
-            # Rank(3) Priority(7) Sz(3) Time(7) User(8) Name(15)
-            line = f"{rank_num:>3} {priority_num:>7} {size_indicator:<3} {duration_str:>7} {username[:8]:<8} {name_col[:15]:<15}"
-        elif self.width < 140:
-            # Rank(3) Priority(7) Sz(3) Time(7) ETA(14) User(10) Reason(12) Name(20)
-            line = f"{rank_num:>3} {priority_num:>7} {size_indicator:<3} {duration_str:>7} {'-':<14} {username[:10]:<10} {reason[:12]:<12} {name_col[:20]:<20}"
+
+class StartedJobWidget(_JobRow):
+    def __init__(self, job):
+        now = time.time()
+        start_ts = ts(getattr(job, 'start_time', {}))
+        submit_ts = ts(getattr(job, 'submit_time', {}))
+        wait_str = (coarse_duration(int(start_ts - submit_ts))
+                    if start_ts and submit_ts and start_ts >= submit_ts
+                    else EMPTY_PLACEHOLDER)
+        ran_str = (coarse_duration(int(now - start_ts))
+                   if start_ts and now >= start_ts else EMPTY_PLACEHOLDER)
+        state = job.job_state[0] if getattr(job, 'job_state', None) else 'R'
+        values = [
+            state_short(state),
+            job.job_id,
+            _user_account(getattr(job, 'user_name', EMPTY_PLACEHOLDER),
+                          getattr(job, 'account', None)),
+            job_partition(job),
+            wait_str,
+            ran_str,
+            time_limit_str(job),
+            compact_tres(job) or EMPTY_PLACEHOLDER,
+            getattr(job, 'nodes', '') or EMPTY_PLACEHOLDER,
+            getattr(job, 'name', EMPTY_PLACEHOLDER) or EMPTY_PLACEHOLDER,
+        ]
+        super().__init__(
+            u.AttrMap(_row(STARTED_LAYOUT, values),
+                      state_attr(state), 'normal_selected'),
+            job.job_id,
+        )
+
+
+class AboutToStartJobWidget(_JobRow):
+    """Selectable row for a pending job in the bottom (starting-next)
+    section. Cluster-wide, sorted by ETA. F8 has the full interactive
+    pending list with grouping."""
+
+    def __init__(self, job):
+        diff = eta_seconds(getattr(job, 'start_time', {}))
+        eta = format_eta_seconds(diff)
+        priority = job_priority(job)
+        reason = getattr(job, 'state_reason', EMPTY_PLACEHOLDER) or EMPTY_PLACEHOLDER
+        user = _user_account(getattr(job, 'user_name', EMPTY_PLACEHOLDER),
+                             getattr(job, 'account', None))
+        partition = job_partition(job)
+        resources = compact_tres(job) or EMPTY_PLACEHOLDER
+        tlim = time_limit_str(job)
+        wait = format_wait(getattr(job, 'submit_time', {}))
+        name = job.name or EMPTY_PLACEHOLDER
+
+        values = [eta, job.job_id, user, partition, priority, reason,
+                  tlim, wait, resources, name]
+        # Soonest jobs (within 5 min or already overdue) get the success attr
+        # so they pop visually; everything else stays neutral.
+        if diff is not None and diff < 300:
+            attr = 'success'
         else:
-            # Rank(3) Priority(7) Sz(3) Time(7) ETA(14) Wait(11) User(10) QOS(8) Reason(15) Resources(18) Name(25)
-            line = f"{rank_num:>3} {priority_num:>7} {size_indicator:<3} {duration_str:>7} {'-':<14} {'-':>11} {username[:10]:<10} {'-':<8} {reason[:15]:<15} {'-':<18} {name_col[:25]:<25}"
+            attr = reason_attr(reason)
+        super().__init__(
+            u.AttrMap(_row(ABOUT_LAYOUT, values), attr, 'normal_selected'),
+            job.job_id,
+        )
 
-        return u.AttrMap(u.Text(line), 'normal', 'normal_selected')
 
+# ----- Screen -------------------------------------------------------------
 
 class ScreenViewQueue(u.WidgetWrap):
-    """Queue status view - shows pending jobs from scheduler's perspective."""
+    """Lifecycle flow: recently finished → finishing next → recently started → starting next."""
+
+    # Vertical weights for the four sections (ended, finishing, started, about).
+    # Equal split — the bottom section is now a static top-of-pending preview,
+    # not a scrolling walker, so it doesn't need extra space. Use F8 for the
+    # full interactive pending list.
+    SECTION_WEIGHTS = (1, 1, 1, 1)
+    # Per-section overhead (title row + column-header row).
+    TRACKER_OVERHEAD = 2
 
     def __init__(self, main_screen, jobs):
         self.main_screen = main_screen
         self.jobs = jobs
 
-        # Group expansion tracking
-        self.expanded_groups = set()  # Set of group_keys that are expanded
+        # Lifecycle trackers.
+        # ended_tracker:   {jobid: (snap, monotonic_ts_when_noticed_gone)}
+        #                  Bounded by display row count — drives the rows
+        #                  shown in the "Recently finished" section.
+        # ended_stats:     {jobid: snap}
+        #                  Same snapshots, but pruned by age (ENDED_STATS_
+        #                  WINDOW) instead of by row count. Drives the
+        #                  one-line summary above the rows.
+        # prev_jobs_by_id: jobid -> Job from last refresh, used to capture
+        #                  last-known snapshots when jobs vanish from scontrol.
+        self.ended_tracker = {}
+        self.ended_stats = {}
+        self.prev_jobs_by_id = {}
 
-        # Build UI - separate header from scrollable content
-        self.header_text = u.AttrMap(u.Text(""), 'jobheader')
-        self.job_walker = u.SimpleFocusListWalker([])
-        self.job_listbox = u.ListBox(self.job_walker)
+        # Focus persistence across re-renders. The 3-second refresh tick
+        # rebuilds every row widget; without snapshotting the user's
+        # selection the cursor would jump back to the default each tick.
+        # Default to "Recently finished" (section 0) — the first interesting
+        # row to look at. Until the user presses an arrow key, we leave
+        # focus unset if that section is empty rather than auto-jumping
+        # somewhere else.
+        self.focused_section = 0
+        self.focused_jobid_by_section = {}
+        self.has_navigated = False
 
-        # Pile: header + divider + scrollable list (with scrollbar only on listbox)
-        pile = u.Pile([
-            ('pack', self.header_text),
-            ('pack', u.Divider("─")),
-            u.ScrollBar(self.job_listbox)
+        # All four sections re-built each render. Each pile carries its own
+        # weight spacer so it's always a box widget and the outer Pile can
+        # give it a weighted height directly. The spacer also pushes job
+        # rows down to the bottom of the section — conveyor-belt flow: a
+        # newly-arrived row appears at the bottom and drifts up as more
+        # rows accumulate behind it.
+        def _empty_pile():
+            return u.Pile([('weight', 1, u.SolidFill(' '))])
+
+        self.ended_section = _empty_pile()
+        self.finishing_section = _empty_pile()
+        self.started_section = _empty_pile()
+        self.about_section = _empty_pile()
+
+        outer = u.Pile([
+            ('weight', self.SECTION_WEIGHTS[0], self.ended_section),
+            ('weight', self.SECTION_WEIGHTS[1], self.finishing_section),
+            ('weight', self.SECTION_WEIGHTS[2], self.started_section),
+            ('weight', self.SECTION_WEIGHTS[3], self.about_section),
         ])
+        self.outer_pile = outer
 
-        self.container = u.LineBox(
-            pile,
-            title="Queue Status - Pending Jobs by Priority",
-            tlcorner='╭', trcorner='╮',
-            blcorner='╰', brcorner='╯'
-        )
-
-        body = u.AttrMap(self.container, 'bg')
+        self.container = rounded_box(outer, title='Queue Status - Job Lifecycle Flow')
 
         u.connect_signal(self.jobs, 'jobs_updated', self.on_jobs_update)
-        u.WidgetWrap.__init__(self, body)
-
-        # Initial update
+        u.WidgetWrap.__init__(self, u.AttrMap(self.container, 'bg'))
+        # Seed prev_jobs_by_id so the first vanish-detection pass has
+        # something to compare against.
+        self.prev_jobs_by_id = {j.job_id: j for j in self.jobs.jobs}
         self.update()
 
-    def on_jobs_update(self, *_args, **_kwargs):
+    # --- Signal / lifecycle -------------------------------------------------
+
+    def on_jobs_update(self, *_a, **_kw):
+        # Tracker bookkeeping has to run on every refresh, not just while
+        # the view is active — otherwise switching to F7 after a stretch
+        # away would reveal empty "ended/started" sections.
+        self._update_trackers()
         if self.is_active():
-            self.update()
+            self._render()
 
     def is_active(self):
         return self.main_screen.frame.body.base_widget is self
 
     def on_resize(self):
-        """Handle terminal resize events."""
         self.update()
 
     def update(self):
-        """Update the queue display."""
-        self.job_walker.clear()
-        widgets = []
+        """Called by ViewManager.show() and by the auto_refresh tick."""
+        self._update_trackers()
+        self._render()
 
-        # Get available width
-        available_width = self.main_screen.width - 3 if hasattr(self.main_screen, 'width') else 120
+    # --- Tracker bookkeeping -----------------------------------------------
 
-        # Update title
-        self.container.set_title("Queue Status - Pending Jobs by Priority (grouped by user)")
+    def _section_capacities(self):
+        """Approximate row-count budget for each section (ended, finishing,
+        started, about)."""
+        total = max(0, getattr(self.main_screen, 'height', 30) - 2)
+        weight_total = sum(self.SECTION_WEIGHTS)
+        return tuple(
+            max(0, int(total * w / weight_total) - self.TRACKER_OVERHEAD)
+            for w in self.SECTION_WEIGHTS
+        )
 
-        # Update header (separate from scrollable content)
-        if available_width < 100:
-            header_text = f"{'#':>3} {'Priority':>7} {'Sz':<3} {'Time':>7} {'User':<8} {'Job Name':<15}"
-        elif available_width < 140:
-            header_text = f"{'#':>3} {'Priority':>7} {'Sz':<3} {'Time':>7} {'ETA':<14} {'User':<10} {'Reason':<12} {'Job Name':<20}"
+    def _update_trackers(self):
+        now_mono = time.monotonic()
+        now_wall = time.time()
+        current_by_id = {j.job_id: j for j in self.jobs.jobs}
+
+        def _is_terminal(job):
+            states = getattr(job, 'job_state', None) or []
+            return any(s in job_state_ended for s in states)
+
+        def _record(jid, snap):
+            """Add to both display tracker and stats dict; cheap to call
+            twice for the same jid since both checks are dict membership."""
+            if jid not in self.ended_tracker:
+                self.ended_tracker[jid] = (snap, now_mono)
+            if jid not in self.ended_stats:
+                self.ended_stats[jid] = snap
+
+        # Trigger 1: job's state transitioned from non-terminal to terminal
+        # during this tick. We require the previous tick's snapshot to have
+        # been non-terminal — otherwise we'd dump every long-finished CD/CA/F
+        # job that's still lingering in scontrol (Slurm keeps records around
+        # for MinJobAge, often hours) onto the conveyor belt the instant we
+        # first see them, even though they finished long before this session
+        # started. The conveyor belt is "things that just happened", so we
+        # only put jobs on it when we actually witnessed the transition.
+        for jid, job in current_by_id.items():
+            if not _is_terminal(job):
+                continue
+            prev = self.prev_jobs_by_id.get(jid)
+            if prev is None or _is_terminal(prev):
+                continue
+            _record(jid, _snapshot_job(job))
+
+        # Trigger 2: job vanished from scontrol entirely without us first
+        # catching it in a terminal state (e.g. very short-lived, or the
+        # transition fell between refresh ticks). Same first-observation
+        # caveat: if the previous tick already had it as terminal, it was
+        # already done before we started watching — don't surface it now.
+        for jid, prev in self.prev_jobs_by_id.items():
+            if jid in current_by_id:
+                continue
+            if _is_terminal(prev):
+                continue
+            _record(jid, _snapshot_job(prev))
+
+        # Capacity-driven eviction for the display tracker (FIFO — oldest
+        # entries leave first when the section is full).
+        ended_cap = self._section_capacities()[0]
+        self.ended_tracker = self._cap_dict(self.ended_tracker, ended_cap)
+
+        # Time-driven eviction for the stats dict — keep anything that ended
+        # within the last ENDED_STATS_WINDOW seconds.
+        cutoff = now_wall - ENDED_STATS_WINDOW
+        self.ended_stats = {jid: snap for jid, snap in self.ended_stats.items()
+                            if snap.get('end_ts', 0) >= cutoff}
+
+        self.prev_jobs_by_id = current_by_id
+
+    @staticmethod
+    def _cap_dict(tracker, cap):
+        if cap <= 0:
+            return {}
+        if len(tracker) <= cap:
+            return tracker
+        sorted_items = sorted(tracker.items(), key=lambda kv: kv[1][1])
+        return dict(sorted_items[-cap:])
+
+    # --- Rendering ---------------------------------------------------------
+
+    def _width(self):
+        return (self.main_screen.width - 3) if hasattr(self.main_screen, 'width') else 120
+
+    def _render(self):
+        width = self._width()
+        ended_cap, finish_cap, started_cap, about_cap = self._section_capacities()
+
+        self._render_ended_section(width, ended_cap)
+        self._render_finishing_section(width, finish_cap)
+        self._render_started_section(width, started_cap)
+        self._render_about_section(width, about_cap)
+        self._restore_focus()
+
+    def _set_section_contents(self, section_pile, top_widgets, row_widgets):
+        """Pack `top_widgets` (title + col header + any info text) at the
+        top, then pin `row_widgets` (job rows) to the bottom via a weight
+        spacer in between. Conveyor-belt flow: newest entries appear at
+        the very bottom of the section and drift up as more accumulate."""
+        contents = [(w, ('pack', None)) for w in top_widgets]
+        contents.append((u.SolidFill(' '), ('weight', 1)))
+        contents.extend((w, ('pack', None)) for w in row_widgets)
+        section_pile.contents = contents
+
+    def _ended_stats_text(self):
+        """One-line summary of jobs in the stats window, or None if empty.
+
+        The window length is computed from the actual data (oldest end_ts)
+        so we don't lie about the time span before we've been running long
+        enough to fill it.
+        """
+        snaps = [s for s in self.ended_stats.values() if s.get('end_ts', 0) > 0]
+        if not snaps:
+            return None
+        span = int(time.time() - min(s['end_ts'] for s in snaps))
+        # Floor at 1s so coarse_duration always returns something readable.
+        span_str = coarse_duration(max(1, span))
+
+        # Break out the headline terminal states. "Other" catches the long
+        # tail (TIMEOUT, OUT_OF_MEMORY, DEADLINE, NODE_FAIL, BOOT_FAIL,
+        # PREEMPTED, REQUEUED, ...) so the four counts always sum to total.
+        # CA is intentionally separate from F: a user-cancelled job isn't
+        # a failure of the job itself.
+        completed = sum(1 for s in snaps if s.get('state') == 'COMPLETED')
+        canceled  = sum(1 for s in snaps if s.get('state') == 'CANCELLED')
+        failed    = sum(1 for s in snaps if s.get('state') == 'FAILED')
+        other     = len(snaps) - completed - canceled - failed
+
+        runtimes = [s['end_ts'] - s['start_ts'] for s in snaps
+                    if s.get('start_ts', 0) > 0
+                    and s['end_ts'] >= s['start_ts']]
+        waits = [s['start_ts'] - s['submit_ts'] for s in snaps
+                 if s.get('start_ts', 0) > 0 and s.get('submit_ts', 0) > 0
+                 and s['start_ts'] >= s['submit_ts']]
+
+        parts = [f"{n} {label}" for n, label in
+                 ((completed, 'completed'), (canceled, 'canceled'),
+                  (failed, 'failed'), (other, 'other')) if n]
+        if runtimes:
+            parts.append(f"avg runtime {coarse_duration(int(sum(runtimes) / len(runtimes)))}")
+        if waits:
+            parts.append(f"avg wait {coarse_duration(int(sum(waits) / len(waits)))}")
+        return f"Last {span_str}: " + ", ".join(parts)
+
+    def _render_ended_section(self, width, cap):
+        # Sort by the job's own end_time (ascending), then keep the newest cap
+        # entries. Display order is oldest-at-top / newest-at-bottom — the
+        # upward "flow" of the view: a job that just ended lands at the
+        # bottom and drifts up before being evicted off the top. Sorting by
+        # end_time (rather than the monotonic "noticed gone" tick) keeps the
+        # ordering correct even when a refresh notices several vanished jobs
+        # at once and the tracker timestamps are tied.
+        items = sorted(self.ended_tracker.values(), key=lambda v: v[0]['end_ts'])
+        if cap:
+            items = items[-cap:]
+
+        # Stats summary lives in the banner alongside the title — same
+        # pattern as "Starting next  (192 pending)". Promotes the summary
+        # to the section header instead of an extra line below it.
+        stats = self._ended_stats_text()
+        title_text = "Recently finished"
+        if stats:
+            title_text = f"{title_text}  ({stats})"
+        title = SectionBanner(title_text, width=width)
+        col_header = u.AttrMap(_header(ENDED_LAYOUT), 'faded')
+        top = [title, col_header]
+        if not items:
+            top.append(u.Text(("faded", "  (no jobs have finished since the view opened)")))
+            rows = []
         else:
-            header_text = f"{'#':>3} {'Priority':>7} {'Sz':<3} {'Time':>7} {'ETA':<14} {'Waiting':>11} {'User':<10} {'QOS':<8} {'Reason':<15} {'Resources':<18} {'Job Name':<25}"
+            rows = [EndedJobWidget(snap) for snap, _ts_seen in items]
+        self._set_section_contents(self.ended_section, top, rows)
 
-        self.header_text.original_widget.set_text(header_text)
+    def _render_finishing_section(self, width, cap):
+        now = time.time()
+        candidates = []
+        for j in self.jobs.jobs:
+            # Already surfaced in Recently Finished — don't show twice.
+            # A job can be both COMPLETING and CANCELLED in the same state
+            # list (cancellation kicked in mid-cleanup); the ended tracker
+            # has captured it, so skip it here.
+            if j.job_id in self.ended_tracker:
+                continue
+            states = getattr(j, 'job_state', None) or []
+            is_running = 'RUNNING' in states
+            is_completing = 'COMPLETING' in states
+            if not (is_running or is_completing):
+                continue
+            if is_completing:
+                # Epilog/cleanup — sort to the very top of the section since
+                # they're the closest to vanishing into "Recently finished".
+                candidates.append((-1, j))
+                continue
+            end_ts = ts(getattr(j, 'end_time', {}))
+            if end_ts <= 0:
+                continue
+            remaining = end_ts - now
+            if remaining <= 0:
+                continue
+            candidates.append((remaining, j))
+        candidates.sort(key=lambda x: x[0])
 
-        # Get all pending jobs
-        pending_jobs = []
+        # No count in the title: this section is always "the next N jobs to
+        # finish" where N is whatever fits in the window — the total number
+        # of running jobs would just be misleading.
+        title = SectionBanner("Finishing next", width=width)
+        col_header = u.AttrMap(_header(FINISHING_LAYOUT), 'faded')
+        top = [title, col_header]
+        visible = candidates[:cap] if cap else []
+        if not candidates:
+            top.append(u.Text(("faded", "  (no running jobs with a known end time)")))
+            rows = []
+        else:
+            rows = [FinishingJobWidget(job) for _, job in visible]
+        # Stash the rendered set so `_render_started_section` can skip
+        # anything that's already on screen in this section (avoids the
+        # same short job showing in both "Recently started" and
+        # "Finishing next" at the same time).
+        self._finishing_visible_jobids = {job.job_id for _, job in visible}
+        self._set_section_contents(self.finishing_section, top, rows)
+
+    def _render_started_section(self, width, cap):
+        now = time.time()
+        # Skip anything that's currently visible in "Finishing next" —
+        # otherwise a short, freshly-started job would appear in both
+        # sections at once. Recently started may end up under-filled as
+        # a result; that's preferable to duplicate rows.
+        skip = getattr(self, '_finishing_visible_jobids', set())
+        candidates = []
+        for j in self.jobs.jobs:
+            if j.job_id in skip:
+                continue
+            # Same dedup as in Finishing Next: a job already shown in
+            # Recently Finished shouldn't reappear in this section.
+            if j.job_id in self.ended_tracker:
+                continue
+            if not _is_just_started(j, now):
+                continue
+            start_ts = ts(getattr(j, 'start_time', {}))
+            candidates.append((start_ts, j))
+        # Sort oldest-first so the slice below keeps the newest. After
+        # slicing, the visible block stays oldest-at-top / newest-at-bottom,
+        # matching the upward "flow" of the view: a freshly-started job
+        # appears at the bottom and drifts up as more jobs start behind it.
+        candidates.sort(key=lambda x: x[0])
+        if cap:
+            candidates = candidates[-cap:]  # keep newest, drop oldest off the top
+
+        # No count in the title: this section is always "the most recently
+        # started N jobs" where N is whatever fits in the window.
+        title = SectionBanner("Recently started", width=width)
+        col_header = u.AttrMap(_header(STARTED_LAYOUT), 'faded')
+        top = [title, col_header]
+        if not candidates:
+            top.append(u.Text(
+                ("faded", "  (no jobs have started in the last 15 minutes)")))
+            rows = []
+        else:
+            rows = [StartedJobWidget(job) for _, job in candidates]
+        self._set_section_contents(self.started_section, top, rows)
+
+    def _render_about_section(self, width, cap):
+        """Top of the cluster-wide pending list, sorted by ETA (soonest first).
+
+        Just a preview — the full interactive pending list lives in F8.
+        """
+        now_wall = time.time()
+        pending_with_eta = []
+        pending_without = []
+        # Collect headline stats in the same pass over the pending list:
+        # requested time limit (what the user asked for) and current wait
+        # (how long the job has been sitting in PENDING so far).
+        time_limits = []
+        waits = []
         for job in self.jobs.jobs:
-            if hasattr(job, 'job_state') and 'PENDING' in job.job_state:
-                pending_jobs.append(job)
+            if 'PENDING' not in (getattr(job, 'job_state', None) or []):
+                continue
+            diff = eta_seconds(getattr(job, 'start_time', {}))
+            if diff is None:
+                pending_without.append(job)
+            else:
+                pending_with_eta.append((diff, job))
+            tl = getattr(job, 'time_limit', {})
+            if isinstance(tl, dict) and tl.get('set'):
+                time_limits.append(tl.get('number', 0) * 60)
+            submit_ts = ts(getattr(job, 'submit_time', {}))
+            if submit_ts > 0:
+                waits.append(max(0, now_wall - submit_ts))
+        pending_with_eta.sort(key=lambda x: x[0])
 
-        if not pending_jobs:
-            widgets.append(u.Text(("faded", "  No pending jobs in the queue")))
+        total_pending = len(pending_with_eta) + len(pending_without)
+        # Title carries the queue depth — unlike the upper sections, the
+        # total count of pending jobs is genuine information (not just the
+        # number of rows that fit). Append avg requested runtime and avg
+        # current wait so the header doubles as a queue-health summary.
+        parts = [f"{total_pending} pending"]
+        if time_limits:
+            parts.append(f"avg time {coarse_duration(int(sum(time_limits) / len(time_limits)))}")
+        if waits:
+            parts.append(f"avg waiting {coarse_duration(int(sum(waits) / len(waits)))}")
+        title = SectionBanner(f"Starting next  ({', '.join(parts)})",
+                              width=width)
+        col_header = u.AttrMap(_header(ABOUT_LAYOUT), 'faded')
+        top = [title, col_header]
+
+        if not pending_with_eta and not pending_without:
+            top.append(u.Text(("faded", "  (no pending jobs in the queue)")))
+            rows = []
         else:
-            # Sort by priority (descending - highest priority first)
-            def get_priority(job):
-                priority = getattr(job, 'priority', {})
-                if isinstance(priority, dict):
-                    return priority.get('number', 0)
-                return priority if isinstance(priority, int) else 0
+            # ETA-known first (sorted by soonest), then unknowns at the end.
+            ordered = [j for _, j in pending_with_eta] + pending_without
+            rows = [AboutToStartJobWidget(job)
+                    for job in (ordered[:cap] if cap else [])]
+        self._set_section_contents(self.about_section, top, rows)
 
-            sorted_jobs = sorted(pending_jobs, key=get_priority, reverse=True)
+    # --- Focus / keypress --------------------------------------------------
+    #
+    # Arrow navigation is handled explicitly here rather than delegating to
+    # urwid's Pile-of-Piles. Each section pile has a non-selectable weight
+    # spacer between its header rows and its job rows (used to pin rows to
+    # the bottom — the conveyor belt effect). Letting urwid's cursor walker
+    # cross that spacer is fragile: it tends to land on the spacer/header,
+    # which we can't represent as a "focused job", so the next re-render
+    # falls back to "last selectable" (the bottom row). Doing it ourselves:
+    # always land on a real row, never confuse the saved-focus state.
 
-            # Group consecutive jobs by (user, reason)
-            groups = []
-            current_group = []
-            current_user = None
-            current_reason = None
+    def _section_piles(self):
+        """The four section piles in display order, mirroring SECTION_WEIGHTS."""
+        return (self.ended_section, self.finishing_section,
+                self.started_section, self.about_section)
 
-            for job in sorted_jobs:
-                user = getattr(job, 'user_name', '?')
-                reason = getattr(job, 'state_reason', 'Unknown')
+    @staticmethod
+    def _selectable_rows(section_pile):
+        """List of (content_index, widget) pairs for selectable rows."""
+        out = []
+        for i, (w, _opts) in enumerate(section_pile.contents):
+            try:
+                if w.selectable():
+                    out.append((i, w))
+            except Exception:
+                pass
+        return out
 
-                if user == current_user and reason == current_reason:
-                    # Same group - add to current
-                    current_group.append(job)
-                else:
-                    # Different group - save current and start new
-                    if current_group:
-                        groups.append(current_group)
-                    current_group = [job]
-                    current_user = user
-                    current_reason = reason
+    def _save_current(self, section_idx, section_pile):
+        """Persist (section, jobid) for the next re-render. Skips when the
+        currently focused widget isn't a row — never overwrite a real saved
+        jobid with None."""
+        self.focused_section = section_idx
+        focused = section_pile.focus
+        jid = getattr(focused, 'jobid', None) if focused is not None else None
+        if jid is not None:
+            self.focused_jobid_by_section[section_idx] = jid
 
-            # Don't forget the last group
-            if current_group:
-                groups.append(current_group)
+    def _restore_focus(self):
+        """After a re-render, put the cursor back on the previously focused
+        job. If that job is gone, fall back to the top row in the same
+        section. If the section itself is now empty and the user has
+        already navigated, walk outward to the nearest non-empty section;
+        if they haven't navigated yet, leave focus unset so an empty
+        Recently-finished section doesn't auto-pull focus elsewhere."""
+        sections = self._section_piles()
+        n = len(sections)
+        start = max(0, min(self.focused_section, n - 1))
+        directions = (0, -1, 1) if self.has_navigated else (0,)
+        for offset in range(n):
+            for direction in directions:
+                if direction == 0 and offset > 0:
+                    continue
+                idx = start + direction * offset
+                if not (0 <= idx < n):
+                    continue
+                rows = self._selectable_rows(sections[idx])
+                if not rows:
+                    continue
+                target_jid = self.focused_jobid_by_section.get(idx)
+                pos = next((i for (i, w) in rows
+                            if getattr(w, 'jobid', None) == target_jid),
+                           rows[0][0])
+                sections[idx].focus_position = pos
+                try:
+                    self.outer_pile.focus_position = idx
+                except (IndexError, ValueError):
+                    pass
+                self.focused_section = idx
+                return
 
-            # Create widgets from groups
-            rank = 1
-            for group in groups:
-                group_size = len(group)
-                start_rank = rank
-                end_rank = rank + group_size - 1
-                group_key = f"{start_rank}-{end_rank}"
+    def _focused_jobid(self):
+        sections = self._section_piles()
+        sec = max(0, min(self.focused_section, len(sections) - 1))
+        focused = sections[sec].focus
+        return getattr(focused, 'jobid', None) if focused is not None else None
 
-                if group_size == 1:
-                    # Single job - always show individually
-                    widgets.append(QueueJobWidget(group[0], rank, width=available_width))
-                elif group_key in self.expanded_groups:
-                    # Expanded group - show all jobs individually
-                    for i, job in enumerate(group):
-                        widgets.append(QueueJobWidget(job, start_rank + i, width=available_width))
-                else:
-                    # Collapsed group - show summary
-                    widgets.append(QueueGroupWidget(start_rank, end_rank, group, width=available_width))
+    def _open_job_info(self, jobid):
+        from slop.ui.overlays import JobInfoOverlay
+        job = self.jobs.job_index.get(jobid)
+        if job is None:
+            # Ended jobs have already vanished from scontrol; the snapshot
+            # row stays selectable so the cursor doesn't trip over a dead
+            # zone, but there's no live Job to hand to the overlay.
+            return
+        self.main_screen.open_overlay(JobInfoOverlay(job, self.main_screen))
 
-                rank += group_size
+    def _move_focus(self, key):
+        """Explicit row-by-row / section-by-section navigation."""
+        self.has_navigated = True
+        sections = self._section_piles()
+        n = len(sections)
+        sec = max(0, min(self.focused_section, n - 1))
+        rows = self._selectable_rows(sections[sec])
+        if not rows:
+            # Current section has nothing to focus — fall back to the
+            # nearest section that does.
+            self._restore_focus()
+            return
+        try:
+            cur_idx = sections[sec].focus_position
+        except (IndexError, AttributeError):
+            cur_idx = rows[0][0]
+        cur_row = next((k for k, (i, _w) in enumerate(rows) if i == cur_idx), 0)
 
-        self.job_walker.extend(widgets)
+        if key == 'home':
+            self._land(sec, sections[sec], rows[0][0])
+            return
+        if key == 'end':
+            self._land(sec, sections[sec], rows[-1][0])
+            return
 
-        # Set focus on first job, or first group if no individual jobs visible
-        if len(self.job_walker) > 0:
-            first_job_idx = None
-            first_group_idx = None
+        delta = -1 if key == 'up' else 1
+        new_row = cur_row + delta
 
-            for i, widget in enumerate(self.job_walker):
-                if hasattr(widget, 'jobid') and first_job_idx is None:
-                    first_job_idx = i
-                    break
-                elif hasattr(widget, 'group_key') and first_group_idx is None:
-                    first_group_idx = i
+        if 0 <= new_row < len(rows):
+            self._land(sec, sections[sec], rows[new_row][0])
+            return
 
-            # Prefer individual job, fall back to group
-            if first_job_idx is not None:
-                self.job_walker.set_focus(first_job_idx)
-            elif first_group_idx is not None:
-                self.job_walker.set_focus(first_group_idx)
+        # Crossed section boundary — find the next non-empty section in
+        # that direction and land on its top (going down) or bottom (going
+        # up). If there is none, clamp to the current section's edge.
+        direction = 1 if delta > 0 else -1
+        idx = sec + direction
+        while 0 <= idx < n:
+            adj_rows = self._selectable_rows(sections[idx])
+            if adj_rows:
+                target = adj_rows[0][0] if direction > 0 else adj_rows[-1][0]
+                self._land(idx, sections[idx], target)
+                return
+            idx += direction
+        # No adjacent section to receive focus — stay at the edge of this
+        # section (top or bottom row).
+        edge = rows[-1][0] if direction > 0 else rows[0][0]
+        self._land(sec, sections[sec], edge)
+
+    def _land(self, section_idx, section_pile, content_idx):
+        """Move focus to (section_idx, content_idx) and persist it."""
+        try:
+            self.outer_pile.focus_position = section_idx
+        except (IndexError, ValueError):
+            pass
+        try:
+            section_pile.focus_position = content_idx
+        except (IndexError, ValueError):
+            pass
+        self._save_current(section_idx, section_pile)
+
+    def selectable(self):
+        # Force-true regardless of the wrapped widget's opinion. The outer
+        # Pile caches its `_selectable` flag from its children at init time,
+        # and the four section piles all start out as non-selectable
+        # spacer-only piles — so the cache says False forever, and arrow
+        # keys never get delivered to this view. We always have at least
+        # one row to focus once data arrives, and we handle Enter/Up/Down/
+        # PageUp/PageDown/Home/End ourselves in keypress().
+        return True
 
     def keypress(self, size, key):
         if self.main_screen.overlay_showing:
             return key
-
-        focus_w, _ = self.job_listbox.get_focus()
-
-        # 'e' or Enter/Space to toggle expand/collapse group
-        if key in ('e', 'enter', ' '):
-            if hasattr(focus_w, 'group_key'):
-                # Focused on a group - toggle expansion
-                group_key = focus_w.group_key
-                if group_key in self.expanded_groups:
-                    self.expanded_groups.remove(group_key)
-                else:
-                    self.expanded_groups.add(group_key)
-                self.update()
-                return None
-            elif hasattr(focus_w, 'jobid') and key in ('enter', ' '):
-                # Focused on individual job - show details
-                from slop.ui.overlays import JobInfoOverlay
-                job = self.jobs.job_index.get(focus_w.jobid)
-                if job:
-                    self.main_screen.open_overlay(JobInfoOverlay(job, self.main_screen))
-                return None
-
+        if key == 'enter':
+            jid = self._focused_jobid()
+            if jid is not None:
+                self._open_job_info(jid)
+            return None
+        if key in ('up', 'down', 'home', 'end'):
+            self._move_focus(key)
+            return None
         return super().keypress(size, key)

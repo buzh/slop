@@ -2,3 +2,4 @@ __pycache__/
 CLAUDE.md
 .claude/
 tmp/
+debug/slop_venv/

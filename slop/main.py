@@ -3,7 +3,7 @@ import sys
 import os
 import argparse
 import urwid as u
-from slop.app import SC
+from slop.app import Slop
 
 def main():
     parser = argparse.ArgumentParser(
@@ -18,7 +18,7 @@ def main():
 
     args = parser.parse_args()
 
-    main_screen = SC(offline_data_dir=args.offlinedata)
+    main_screen = Slop(offline_data_dir=args.offlinedata)
     main_screen.startloop()
 
 def graceful_exit(signal, frame):

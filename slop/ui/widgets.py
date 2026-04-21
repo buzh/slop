@@ -1,21 +1,19 @@
 import urwid as u
 import datetime
 import time
-from slop.utils import format_duration, nice_tres, compress_int_range
-from slop.slurm import is_running, is_pending, is_ended, job_state_running, job_state_ended, job_state_pending, job_state_short
+from slop.utils import format_duration, nice_tres, compact_tres, compress_int_range
+from slop.slurm import is_running, is_pending, is_ended, job_state_short
 from slop import __version__
 from slop.ui.style import get_display_attr
+from slop.ui.state_style import state_icon, state_attr
+from slop.ui.constants import EMPTY_PLACEHOLDER
 
-class IndentHeader(u.WidgetWrap):
-    def __init__(self, header):
-        indented_widget = u.Columns([
-            ('fixed', 2, u.Text('  ')),
-            header
-        ])
-        super().__init__(indented_widget)
 
-    def selectable(self):
-        return False
+def rounded_box(content, title=''):
+    """LineBox with the project's rounded corners."""
+    return u.LineBox(content, title=title,
+                     tlcorner='╭', trcorner='╮',
+                     blcorner='╰', brcorner='╯')
 
 
 class ChildJobWidget(u.WidgetWrap):
@@ -24,23 +22,10 @@ class ChildJobWidget(u.WidgetWrap):
         self.jobid = job.job_id
 
         # Build compact, informative display for array child
-        task_id = job._task_id if hasattr(job, '_task_id') and job._task_id is not None else '?'
+        task_id = job._task_id if hasattr(job, '_task_id') and job._task_id is not None else EMPTY_PLACEHOLDER
 
-        # Determine state symbol and color
-        if "COMPLETED" in job.states:
-            symbol, color = "✓", "state_running"
-        elif {"FAILED", "NODE_FAIL", "OUT_OF_MEMORY"} & job.states:
-            symbol, color = "✗", "state_failed"
-        elif "TIMEOUT" in job.states:
-            symbol, color = "⚠", "warning"
-        elif "CANCELLED" in job.states:
-            symbol, color = "⊗", "faded"
-        elif {"RUNNING", "COMPLETING"} & job.states:
-            symbol, color = "↻", "state_running"
-        elif "PENDING" in job.states:
-            symbol, color = "⋯", "state_pending"
-        else:
-            symbol, color = "·", "faded"
+        primary_state = job.job_state[0] if job.job_state else ''
+        symbol = state_icon(primary_state)
 
         # Build display based on state
         if is_running(job):
@@ -50,33 +35,33 @@ class ChildJobWidget(u.WidgetWrap):
                 elapsed = int(time.time()) - start_time['number']
                 runtime = format_duration((elapsed // 60) * 60)
             else:
-                runtime = "N/A"
+                runtime = EMPTY_PLACEHOLDER
 
-            node = getattr(job, 'nodes', 'N/A')
+            node = getattr(job, 'nodes', None)
             tres = nice_tres(job) if hasattr(job, 'tres_alloc_str') else ''
 
             text = f"  Task [{task_id}]: {symbol} {runtime}"
-            if node != 'N/A' and node:
+            if node:
                 text += f" on {node}"
             if tres:
                 text += f" ({tres})"
 
         elif "PENDING" in job.states:
             # Pending: Task [8]: ⋯ Priority (10h requested)
-            reason = getattr(job, 'state_reason', 'Unknown')
+            reason = getattr(job, 'state_reason', EMPTY_PLACEHOLDER)
             time_limit = getattr(job, 'time_limit', {})
             if isinstance(time_limit, dict) and time_limit.get('number'):
                 requested = format_duration(time_limit['number'] * 60)
             else:
-                requested = "N/A"
+                requested = EMPTY_PLACEHOLDER
 
             text = f"  Task [{task_id}]: {symbol} {reason} ({requested} requested)"
 
         else:
             # Ended: Task [5]: ✓ 3h42m (exit: 0) or ✗ 0h5m (exit: 1, OutOfMemory)
             wall_time_val = getattr(job, 'end_time', {}).get('number', 0) - getattr(job, 'start_time', {}).get('number', 0)
-            wall_time = format_duration(wall_time_val) if wall_time_val > 0 else "N/A"
-            exit_code = getattr(job, 'returncode', 'N/A')
+            wall_time = format_duration(wall_time_val) if wall_time_val > 0 else EMPTY_PLACEHOLDER
+            exit_code = getattr(job, 'returncode', EMPTY_PLACEHOLDER)
 
             text = f"  Task [{task_id}]: {symbol} {wall_time} (exit: {exit_code}"
 
@@ -97,63 +82,14 @@ class ChildJobWidget(u.WidgetWrap):
 
 class ArrayPendWidget(u.WidgetWrap):
     def __init__(self, pending):
-        widget = u.Columns([u.Text(f"  [+ {pending} more pending]")], dividechars=1)
-        widget = u.AttrMap(widget, 'faded', 'normal_selected')
-        super().__init__(widget)
+        text = u.Text(f"  [+ {pending} more pending]")
+        super().__init__(u.AttrMap(text, 'faded', 'normal_selected'))
 
     def selectable(self):
         return False
 
-class UserJobListHeader(u.WidgetWrap): # Dynamic header line item for job walker
-    def __init__(self, parent, joblistwidget):
-        display_attr = joblistwidget.display_attr
-        job_states = joblistwidget.job.states
-        is_array = bool(joblistwidget.job.is_array)
-        is_array_parent = joblistwidget.job.is_array_parent
-        is_running = bool(job_states & job_state_running)
-        is_ended = bool(job_states & job_state_ended)
-        is_pending = bool(job_states & job_state_pending)
-
-        dynamic_labels = {
-            'start_time': lambda: "Running" if is_running else "Started" if is_ended else "Starting",
-            'job_state': lambda: "Status" if is_ended else "S",
-            'wall_time': lambda: "Duration" if not is_pending else "Time",
-            'nodes': lambda: "Nodes",
-        }
-
-        static_labels = {
-            'end_time': "Deadline",
-            'submit_time': "Submitted",
-            'job_id': "Job ID",
-            'task_id': "Task",
-            'account': "Acct",
-            'exit_code': "Exit code",
-            'array_tasks': "Array",
-            'user_name': "User",
-        }
-
-        header = []
-        for headeritem in display_attr:
-            if headeritem in dynamic_labels:
-                label = dynamic_labels[headeritem]()
-            elif headeritem in static_labels:
-                label = static_labels[headeritem]
-            else:
-                label = headeritem.capitalize()
-
-            if parent.sort_col == headeritem:
-                arrow = "↓" if parent.sort_reverse else "↑"
-                label = f"{label} {arrow}"
-
-            h = u.Text(label)
-            header.append((display_attr[headeritem][0], display_attr[headeritem][1], h))
-            
-        widget = u.AttrMap(u.Columns(header, dividechars=1), 'jobheader')
-        super().__init__(widget)
-
-
 class UserJobListWidget(u.WidgetWrap):
-    def __init__(self, job, width=None, view_type=None):
+    def __init__(self, job, width=None, view_type=None, force_array_tasks_col=False):
         self.job = job
         # Defensive field access - sacct jobs may not have all fields
         # For array parents with running children, use earliest child times
@@ -171,7 +107,7 @@ class UserJobListWidget(u.WidgetWrap):
         self.jobid = job.job_id
         self.width = width
         self.view_type = view_type
-        self.display_attr = get_display_attr(job, width, view_type)
+        self.display_attr = get_display_attr(job, width, view_type, force_array_tasks_col)
         self.is_array = job.is_array
         self.widget = self.create_widget()
         super().__init__(self.widget)
@@ -199,87 +135,61 @@ class UserJobListWidget(u.WidgetWrap):
             if col == "job_state":
                 # For array parents with running children, show as running regardless of parent state
                 if job.is_array_parent and job.has_running_children:
-                    symbol = "↻"
-                    text_attr = "state_running"  # green
-                    # Show R instead of parent's actual state for clarity
+                    primary = "RUNNING"
                     short_states = "R"
                 else:
-                    # Always use short form with color and symbol
+                    primary = job.job_state[0] if job.job_state else ''
                     short_states = ",".join(job_state_short.get(s, f"?{s}") for s in job.job_state)
-
-                    # Determine symbol and color based on state
-                    if "COMPLETED" in job.states:
-                        symbol = "✓"
-                        text_attr = "state_running"  # green
-                    elif {"FAILED", "NODE_FAIL", "OUT_OF_MEMORY"} & job.states:
-                        symbol = "✗"
-                        text_attr = "state_failed"  # red
-                    elif "TIMEOUT" in job.states:
-                        symbol = "⚠"
-                        text_attr = "warning"  # yellow
-                    elif "CANCELLED" in job.states:
-                        symbol = "⊗"
-                        text_attr = "faded"  # gray
-                    elif {"RUNNING", "COMPLETING"} & job.states:
-                        symbol = "↻"
-                        text_attr = "state_running"  # green
-                    elif "PENDING" in job.states:
-                        symbol = "⋯"
-                        text_attr = "state_pending"  # yellow
-                    else:
-                        # Other states (CONFIGURING, SUSPENDED, etc.)
-                        symbol = "·"
-                        text_attr = "faded"
-
+                symbol = state_icon(primary)
+                text_attr = state_attr(primary)
                 t = f"{symbol} {short_states}"
             elif col == "task_id":
                 # For array children, show task ID
                 if job.is_array_child and job._task_id is not None:
                     t = f"[{job._task_id}]"
                 else:
-                    t = "N/A"
+                    t = EMPTY_PLACEHOLDER
             elif col == "job_id":
-                if job.is_array_parent:
+                if job.is_array_parent and job.array_children:
                     marker = "▼" if not job.array_collapsed_widget else "▶"
 
-                    # Count child task states for status summary
-                    if job.array_children:
-                        running = sum(1 for c in job.array_children if is_running(c))
-                        pending = sum(1 for c in job.array_children if is_pending(c))
-                        ended = sum(1 for c in job.array_children if is_ended(c))
+                    running = sum(1 for c in job.array_children if is_running(c))
+                    pending = sum(1 for c in job.array_children if is_pending(c))
+                    ended = sum(1 for c in job.array_children if is_ended(c))
 
-                        # Build compact status showing only non-zero counts
-                        parts = []
-                        if running > 0:
-                            parts.append(f"R:{running}")
-                        if pending > 0:
-                            parts.append(f"P:{pending}")
-                        if ended > 0:
-                            parts.append(f"E:{ended}")
-                        status = f" ({' '.join(parts)})" if parts else ""
-                    else:
-                        status = ""
+                    parts = []
+                    if running > 0:
+                        parts.append(f"R:{running}")
+                    if pending > 0:
+                        parts.append(f"P:{pending}")
+                    if ended > 0:
+                        parts.append(f"E:{ended}")
+                    status = f" ({' '.join(parts)})" if parts else ""
 
-                    t = f"{marker} {job.job_id}_[*]{status}"
+                    t = f"{marker} {job.job_id}{status}"
                 else:
                     t = str(job.job_id)
             elif col == "array_tasks":
-                    
-                    t = compress_int_range(job.array_task_ids) 
+                if job.is_array_parent and job.array_children:
+                    t = compress_int_range(job.array_task_ids) or EMPTY_PLACEHOLDER
+                elif getattr(job, 'array_task_string', ''):
+                    t = job.array_task_string
+                else:
+                    t = EMPTY_PLACEHOLDER
             elif col == "start_time": # epoch -> 1d2h3m
                 if self.start_time:
                     ts = int(time.time()) - self.start_time
                     st = (ts // 60) * 60
                     t = format_duration(st)
                 else:
-                    t = "N/A"
+                    t = EMPTY_PLACEHOLDER
             elif col == "end_time": # epoch -> 1d2h3m
                 if self.end_time:
                     ts = self.end_time - int(time.time())
                     timestamp = (ts // 60) * 60
                     t = format_duration(timestamp)
                 else:
-                    t = "N/A"
+                    t = EMPTY_PLACEHOLDER
             elif col == "submit_time": # epoch -> HH:MM (if today) or day/month HH:MM
                 if value and isinstance(value, dict) and "number" in value:
                     timestamp = datetime.datetime.fromtimestamp(int(value["number"]))
@@ -288,7 +198,7 @@ class UserJobListWidget(u.WidgetWrap):
                     else:
                         t = timestamp.strftime('%d/%m %H:%M')
                 else:
-                    t = "N/A"
+                    t = EMPTY_PLACEHOLDER
             elif col == "wall_time": # if pending, show time requested. otherwise, show duration so far
                 if 'PENDING' in job.states:
                     t = format_duration(self.time_limit * 60)
@@ -303,6 +213,8 @@ class UserJobListWidget(u.WidgetWrap):
                 t = job.returncode
             elif col == "tres":
                 t = nice_tres(job)
+            elif col == "resources":
+                t = compact_tres(job) or EMPTY_PLACEHOLDER
             else:
                 t = str(value)
 
@@ -340,14 +252,28 @@ class UserItem(u.WidgetWrap):
             return True
 
 
-class JobListDivider(u.WidgetWrap):
-    """Divider with optional centered text label."""
-    def __init__(self, text=None):
-        if text:
-            w = u.Columns([u.Divider("-"), ('pack', u.AttrMap(u.Text(text, align='center'), 'jobheader')), u.Divider("-")], dividechars=2)
-        else:
-            w = u.Divider("-")
-        super().__init__(w)
+class SectionHeader(u.WidgetWrap):
+    """'═══ LABEL ═══...' header that auto-fills remaining width via urwid.Divider."""
+    def __init__(self, label):
+        cols = u.Columns([('pack', u.Text(f'═══ {label} ')), u.Divider('═')])
+        super().__init__(u.AttrMap(cols, 'jobheader'))
+
+
+class SectionBanner(u.WidgetWrap):
+    """Non-selectable full-width banner row inside a scrolling panel.
+
+    Variant of SectionHeader for the in-panel use case (queue/scheduler
+    sub-sections); pads the label to `width` so the 'jobheader' attr fills
+    the row even when the text is short.
+    """
+    def __init__(self, label, width=None):
+        text = f"  {label}"
+        if width:
+            text = text.ljust(max(width, len(text)))
+        super().__init__(u.AttrMap(u.Text(text), 'jobheader'))
+
+    def selectable(self):
+        return False
 
 
 class ExpandableGroupMarker(u.WidgetWrap):
@@ -368,7 +294,7 @@ class Header(u.WidgetWrap):
         self.main_screen = main_screen
         self.text_left = u.Text(f"Slurm Top {__version__}", wrap='clip')
         self.text_right = u.Text("", align='right', wrap='clip')
-        header = u.AttrWrap(u.Columns([self.text_left, self.text_right]), 'header')
+        header = u.AttrMap(u.Columns([self.text_left, self.text_right]), 'header')
         u.WidgetWrap.__init__(self, header)
 
     def update(self, view_name=None):
@@ -383,7 +309,7 @@ class Footer(u.WidgetWrap):
     def __init__(self, main_screen=None):
         self.main_screen = main_screen
         self.text = u.Text("", wrap='clip')
-        footer = u.AttrWrap(self.text, 'footer')
+        footer = u.AttrMap(self.text, 'footer')
         u.WidgetWrap.__init__(self, footer)
 
     def update(self, view_type=None, f1_label=None):
@@ -398,11 +324,11 @@ class Footer(u.WidgetWrap):
 
         # Build shortcuts based on screen width
         if screen_width < 90:
-            text = "F1-7:Views ?:Help q:Quit"
+            text = "F1-8:Views ?:Help q:Quit"
         elif screen_width < 140:
-            text = "F1-F7: Views | ?: Help | q: Quit"
+            text = "F1-F8: Views | ?: Help | q: Quit"
         else:
-            text = "F1: Jobs/Users | F2: Accounts | F3: Partitions | F4: States | F5: Cluster | F6: History | F7: Queue | ?: Help | q: Quit"
+            text = "F1: Jobs/Users | F2: Accounts | F3: Partitions | F4: States | F5: Cluster | F6: History | F7: Queue | F8: Scheduler | ?: Help | q: Quit"
 
         self.text.set_text(text)
 
@@ -419,22 +345,18 @@ class GenericOverlayText(u.WidgetWrap):
         self.overlay_height = num_lines + 4 # pad with 4 extra lines
 
         t = u.Text(text, align='center')
-        linebox = u.LineBox(
-            u.Filler(t),
-            tlcorner='╭', trcorner='╮',
-            blcorner='╰', brcorner='╯'
-        )
-        widget = u.AttrMap(linebox, 'bg')
+        widget = u.AttrMap(rounded_box(u.Filler(t)), 'bg')
         u.WidgetWrap.__init__(self, widget)
 
 
 class HelpOverlay(u.WidgetWrap):
-    """Overlay for displaying keyboard shortcuts help."""
-    def __init__(self, main_screen, text_lines):
+    """Overlay for displaying scrollable text content (help, diagnostics, ...)."""
+    def __init__(self, main_screen, text_lines, title='Help'):
         """
         Args:
             main_screen: Main screen instance
             text_lines: List of strings or (attr, string) tuples
+            title: Title shown in the overlay's rounded border
         """
         self.overlay_height = len(text_lines) + 4  # pad with 4 extra lines
 
@@ -449,13 +371,7 @@ class HelpOverlay(u.WidgetWrap):
                 widgets.append(u.Text(line))
 
         listbox = u.ListBox(u.SimpleFocusListWalker(widgets))
-        linebox = u.LineBox(
-            listbox,
-            title="Help",
-            tlcorner='╭', trcorner='╮',
-            blcorner='╰', brcorner='╯'
-        )
-        widget = u.AttrMap(linebox, 'bg')
+        widget = u.AttrMap(rounded_box(listbox, title=title), 'bg')
         u.WidgetWrap.__init__(self, widget)
 
 
@@ -464,12 +380,7 @@ class ProgressOverlay(u.WidgetWrap):
     def __init__(self, main_screen, initial_text):
         self.overlay_height = 10
         self.text_widget = u.Text(initial_text, align='center')
-        linebox = u.LineBox(
-            u.Filler(self.text_widget),
-            tlcorner='╭', trcorner='╮',
-            blcorner='╰', brcorner='╯'
-        )
-        widget = u.AttrMap(linebox, 'bg')
+        widget = u.AttrMap(rounded_box(u.Filler(self.text_widget)), 'bg')
         u.WidgetWrap.__init__(self, widget)
 
     def update_text(self, text):
@@ -482,7 +393,7 @@ class AccountUsageWidget(u.WidgetWrap):
 
     def __init__(self, account_data):
         self.account_data = account_data
-        account = account_data.get('account', 'N/A')
+        account = account_data.get('account', EMPTY_PLACEHOLDER)
         used_hours = account_data.get('used', 0)
 
         hours_str = f"{used_hours:,}" if used_hours >= 1000 else str(used_hours)

@@ -1,4 +1,6 @@
 """Job model representing a single Slurm job."""
+import json
+import time
 import urwid as u
 from slop.ui.widgets import UserJobListWidget
 from slop.slurm import (
@@ -15,6 +17,13 @@ class Job:
     """A singular job."""
 
     def __init__(self, job_data):
+        # Stable hash of the raw JSON so refreshes can detect "no visible
+        # change" and transfer the cached widget from the previous instance.
+        try:
+            self._raw_data_hash = hash(json.dumps(job_data, sort_keys=True, default=str))
+        except (TypeError, ValueError):
+            self._raw_data_hash = None
+
         # populate attributes dynamically from json
         for key, value in job_data.items():
             setattr(self, key, value)
@@ -136,15 +145,51 @@ class Job:
         if not hasattr(self, '_widget'):
             self._widget = UserJobListWidget(self,
                                             width=getattr(self, '_widget_width', None),
-                                            view_type=getattr(self, '_widget_view_type', None))
+                                            view_type=getattr(self, '_widget_view_type', None),
+                                            force_array_tasks_col=getattr(self, '_widget_force_array_tasks_col', False))
         return self._widget
 
-    def set_widget_width(self, width, view_type=None):
-        """Set width and view type for widget creation and clear cache to force recreation."""
+    def set_widget_width(self, width, view_type=None, force_array_tasks_col=False):
+        """Set width and view type for widget creation; invalidate cache only on change."""
+        if (getattr(self, '_widget_width', None) == width
+                and getattr(self, '_widget_view_type', None) == view_type
+                and getattr(self, '_widget_force_array_tasks_col', False) == force_array_tasks_col):
+            return
         self._widget_width = width
         self._widget_view_type = view_type
+        self._widget_force_array_tasks_col = force_array_tasks_col
         if hasattr(self, '_widget'):
             delattr(self, '_widget')
+
+    def widget_content_signature(self):
+        """Identity for the rendered widget. Two jobs with equal signatures
+        produce identical widget output and can share a cached widget."""
+        # start_time/end_time columns render relative to now, rounded to the
+        # minute, so the minute bucket gates cache reuse for time displays.
+        minute_bucket = int(time.time()) // 60
+        children_sig = (
+            tuple(sorted(c._raw_data_hash for c in self.array_children if c._raw_data_hash is not None))
+            if self.is_array_parent else ()
+        )
+        return (
+            self._raw_data_hash,
+            self.array_collapsed_widget,
+            children_sig,
+            minute_bucket,
+        )
+
+    def transfer_widget_cache_from(self, old_job):
+        """Adopt old_job's cached widget if its signature still matches ours."""
+        if not hasattr(old_job, '_widget'):
+            return False
+        if old_job.widget_content_signature() != self.widget_content_signature():
+            return False
+        self._widget = old_job._widget
+        self._widget.job = self
+        self._widget_width = getattr(old_job, '_widget_width', None)
+        self._widget_view_type = getattr(old_job, '_widget_view_type', None)
+        self._widget_force_array_tasks_col = getattr(old_job, '_widget_force_array_tasks_col', False)
+        return True
 
     @property
     def has_running_children(self):

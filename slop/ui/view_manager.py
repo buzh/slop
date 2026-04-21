@@ -1,6 +1,6 @@
 """Owns the screen instances and handles view switching for the main app.
 
-`SC` keeps thin `show_screen_*` proxies so external callers (e.g., overlays
+`Slop` keeps thin `show_screen_*` proxies so external callers (e.g., overlays
 calling `main_screen.show_screen_users()`) and the `keypress` dispatch don't
 need to learn a new API.
 """
@@ -14,11 +14,12 @@ from slop.ui.views import (
     ScreenViewMyJobs,
     ScreenViewQueue,
     ScreenViewReport,
+    ScreenViewScheduler,
 )
 
 
 # View IDs (preserved from app.py for compatibility with main_screen.current_view)
-MY_JOBS, USERS, ACCOUNTS, PARTITIONS, STATES, CLUSTER, REPORT, QUEUE = range(8)
+MY_JOBS, USERS, ACCOUNTS, PARTITIONS, STATES, CLUSTER, REPORT, QUEUE, SCHEDULER = range(9)
 
 
 class ViewManager:
@@ -33,6 +34,7 @@ class ViewManager:
         self.states = ScreenViewStates(sc, sc.jobs)
         self.cluster = ScreenViewCluster(sc, sc.cluster_fetcher)
         self.queue = ScreenViewQueue(sc, sc.jobs)
+        self.scheduler = ScreenViewScheduler(sc, sc.sdiag_fetcher)
         self.report = None  # Created on demand
 
         self.current = USERS
@@ -45,13 +47,14 @@ class ViewManager:
         by_id = {
             MY_JOBS: self.my_jobs, USERS: self.users, ACCOUNTS: self.accounts,
             PARTITIONS: self.partitions, STATES: self.states, CLUSTER: self.cluster,
+            QUEUE: self.queue, SCHEDULER: self.scheduler,
         }
         return by_id.get(self.current)
 
     def all_resizable(self):
         """All screens that should receive `on_resize()`."""
         screens = [self.my_jobs, self.users, self.accounts, self.partitions,
-                   self.states, self.cluster, self.queue]
+                   self.states, self.cluster, self.queue, self.scheduler]
         if self.report is not None:
             screens.append(self.report)
         return screens
@@ -87,6 +90,9 @@ class ViewManager:
 
     def show_queue(self):
         self.show(QUEUE, self.queue, "Queue Status", 'queue')
+
+    def show_scheduler(self):
+        self.show(SCHEDULER, self.scheduler, "Scheduler Health", 'scheduler')
 
     def show_report(self):
         """Show report view, creating an empty one for current user if needed."""

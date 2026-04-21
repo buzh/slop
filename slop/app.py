@@ -1,10 +1,12 @@
 import urwid as u
 import asyncio
 import os
+import time
 from slop.models import Jobs
 from slop.slurm import (
     SlurmJobFetcher,
     SlurmClusterFetcher,
+    SlurmSdiagFetcher,
     SreportFetcher,
     AdaptiveSacctFetcher,
 )
@@ -12,7 +14,7 @@ from slop.ui.widgets import Header, Footer, GenericOverlayText, HelpOverlay
 from slop.ui.views import ScreenViewReport
 from slop.ui.overlays import ConfirmExit, SearchOverlay
 from slop.ui.style import PALETTE
-from slop.ui.help import build_help_text
+from slop.ui.help import build_help_text, build_diagnostics_text
 from slop.ui.view_manager import ViewManager
 
 
@@ -22,8 +24,8 @@ def unhandled_input(key: str) -> None:
         raise u.ExitMainLoop()
 
 
-class SC(u.WidgetWrap):
-    """Main screen controller for slop TUI."""
+class Slop(u.WidgetWrap):
+    """Main screen controller for the slop TUI."""
 
     def __init__(self, offline_data_dir=None):
         self.palette = PALETTE
@@ -34,10 +36,16 @@ class SC(u.WidgetWrap):
         self.offline_data_dir = offline_data_dir
         self.jobfetcher = SlurmJobFetcher(loop=self.asyncloop._loop, offline_data_dir=offline_data_dir)
         self.cluster_fetcher = SlurmClusterFetcher(loop=self.asyncloop._loop, offline_data_dir=offline_data_dir)
+        self.sdiag_fetcher = SlurmSdiagFetcher(loop=self.asyncloop._loop, offline_data_dir=offline_data_dir)
         self.sreport_fetcher = SreportFetcher(offline_data_dir=offline_data_dir)
         self.adaptive_sacct = AdaptiveSacctFetcher(offline_data_dir=offline_data_dir)
         self.jobs = Jobs(self.jobfetcher.fetch_sync())
         self.refreshing = False
+        # Throttle slow-moving fetchers below the 3s job-refresh cadence.
+        self._cluster_interval = 10
+        self._cluster_next_fetch = 0.0
+        self._sdiag_interval = 30
+        self._sdiag_next_fetch = 0.0
 
         # UI components
         self.header = Header(self)
@@ -93,6 +101,7 @@ class SC(u.WidgetWrap):
     def show_screen_states(self):   return self.views.show_states()
     def show_screen_cluster(self):  return self.views.show_cluster()
     def show_screen_queue(self):    return self.views.show_queue()
+    def show_screen_scheduler(self): return self.views.show_scheduler()
     def show_screen_report(self):   return self.views.show_report()
 
     def get_f1_label(self):
@@ -107,10 +116,21 @@ class SC(u.WidgetWrap):
         self.refreshing = True
 
         try:
-            await self.jobfetcher.update_once()
+            # Run all due fetchers in parallel; cluster/sdiag are throttled
+            # below the 3s job cadence and only run when their interval has
+            # elapsed. Wait for all before announcing the refresh, so views
+            # that re-render on jobs_updated see fresh aux data too.
+            now = time.monotonic()
+            fetches = [self.jobfetcher.update_once()]
+            if now >= self._cluster_next_fetch:
+                fetches.append(self.cluster_fetcher.fetch())
+                self._cluster_next_fetch = now + self._cluster_interval
+            if now >= self._sdiag_next_fetch:
+                fetches.append(self.sdiag_fetcher.fetch())
+                self._sdiag_next_fetch = now + self._sdiag_interval
+            await asyncio.gather(*fetches)
             slurm_job_data = await self.jobfetcher.fetch()
             self.jobs.update_slurmdata(slurm_job_data)
-            await self.cluster_fetcher.fetch()
 
             target = self.views.auto_refresh_target()
             if target is not None:
@@ -128,7 +148,8 @@ class SC(u.WidgetWrap):
         for screen in self.views.all_resizable():
             screen.on_resize()
 
-        footer_types = ['myjobs', 'users', 'accounts', 'partitions', 'states', 'cluster']
+        footer_types = ['myjobs', 'users', 'accounts', 'partitions', 'states',
+                        'cluster', 'history', 'queue', 'scheduler']
         if 0 <= self.views.current < len(footer_types):
             self.footer.update(footer_types[self.views.current], f1_label=self.get_f1_label())
 
@@ -138,9 +159,20 @@ class SC(u.WidgetWrap):
 
     def show_app_info(self):
         """Display application information and keyboard shortcuts overlay."""
-        fetch_duration = self.jobfetcher.last_fetch_duration.total_seconds()
-        help_text = build_help_text(self.views.current, fetch_duration)
+        help_text = build_help_text(self.views.current)
         self.open_overlay(HelpOverlay(self, help_text))
+
+    def show_diagnostics(self):
+        """Display per-fetcher timings and error state."""
+        fetchers = [
+            {'name': 'Jobs',      'command': 'scontrol --json show jobs',       'fetcher': self.jobfetcher},
+            {'name': 'Cluster',   'command': 'scontrol --json show nodes/partitions', 'fetcher': self.cluster_fetcher},
+            {'name': 'Scheduler', 'command': 'sdiag --json',                    'fetcher': self.sdiag_fetcher},
+            {'name': 'sreport',   'command': 'sreport cluster AccountUtilizationByUser ...', 'fetcher': self.sreport_fetcher},
+            {'name': 'sacct',     'command': 'sacct --json -u <user> -S <date>', 'fetcher': self.adaptive_sacct},
+        ]
+        text = build_diagnostics_text(fetchers)
+        self.open_overlay(HelpOverlay(self, text, title='Diagnostics'))
 
     def open_search(self):
         """Open search overlay."""
@@ -204,6 +236,7 @@ class SC(u.WidgetWrap):
             'f5': self.show_screen_cluster,
             'f6': self.show_screen_report,
             'f7': self.show_screen_queue,
+            'f8': self.show_screen_scheduler,
         }
         if key in view_map:
             view_map[key]()
@@ -215,6 +248,10 @@ class SC(u.WidgetWrap):
 
         if key == '?':
             self.show_app_info()
+            return
+
+        if key == '!':
+            self.show_diagnostics()
             return
 
         if key == 'esc' and self.overlay_showing:

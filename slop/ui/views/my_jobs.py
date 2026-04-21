@@ -3,8 +3,11 @@ import urwid as u
 import datetime
 import os
 from slop.models import Jobs
-from slop.utils import format_duration, smart_truncate
+from slop.utils import format_duration, smart_truncate, compact_tres
+from slop.ui.constants import EMPTY_PLACEHOLDER
 from slop.ui.overlays import JobInfoOverlay
+from slop.ui.widgets import SectionHeader, rounded_box
+from slop.ui.state_style import state_icon, width_tier
 from slop.slurm.history_fetcher import HistoryFetcher
 
 
@@ -40,21 +43,9 @@ class MyJobDetailWidget(u.WidgetWrap):
         """Build aligned columns for the job."""
         job = self.job
         state = job.job_state[0] if job.job_state else 'UNKNOWN'
+        icon = state_icon(state, style='detail')
 
-        # State icons
-        icons = {
-            'RUNNING': '▶',
-            'COMPLETING': '▶',
-            'PENDING': '⏸',
-            'COMPLETED': '✓',
-            'FAILED': '✗',
-            'TIMEOUT': '⏱',
-            'CANCELLED': '⊗',
-            'OUT_OF_MEMORY': '⚠',
-        }
-        icon = icons.get(state, '•')
-
-        if state in ['RUNNING', 'COMPLETING']:
+        if state in ('RUNNING', 'COMPLETING'):
             return self._running_columns(icon)
         elif state == 'PENDING':
             return self._pending_columns(icon)
@@ -69,8 +60,8 @@ class MyJobDetailWidget(u.WidgetWrap):
         job_id = str(job.job_id)
 
         # Time progress
-        time_text = ''
-        elapsed_str = ''
+        time_text = EMPTY_PLACEHOLDER
+        elapsed_str = EMPTY_PLACEHOLDER
         if job.start_time and job.start_time.get('set') and job.time_limit and job.time_limit.get('set'):
             start = datetime.datetime.fromtimestamp(job.start_time['number'])
             now = datetime.datetime.now()
@@ -87,22 +78,19 @@ class MyJobDetailWidget(u.WidgetWrap):
             time_text = f"{elapsed_str}/{limit_str}[{bar}]"
 
         # Resources
-        resources = self._get_compact_resources(job)
+        resources = compact_tres(job) or EMPTY_PLACEHOLDER
 
         # Node
-        node = job.nodes if job.nodes else '?'
+        node = job.nodes if job.nodes else EMPTY_PLACEHOLDER
 
-        # Format based on available width
-        if self.width < 90:
-            # Narrow: just essentials
+        tier = width_tier(self.width)
+        if tier == 'narrow':
             name = self._truncate(job.name, 15)
-            line = f"{icon} {job_id:>7} {name:<17} {elapsed_str if elapsed_str else 'N/A':>7}"
-        elif self.width < 120:
-            # Medium: add time progress
+            line = f"{icon} {job_id:>7} {name:<17} {elapsed_str:>7}"
+        elif tier == 'medium':
             name = self._truncate(job.name, 18)
             line = f"{icon} {job_id:>7} {name:<20} {time_text:<30}"
         else:
-            # Wide: full detail
             name = self._truncate(job.name, 22)
             line = f"{icon} {job_id:>7} {name:<22} {time_text:<30} {resources:<12} {node}"
 
@@ -116,7 +104,7 @@ class MyJobDetailWidget(u.WidgetWrap):
         job_id = str(job.job_id)
 
         # Wait time
-        wait_text = ''
+        wait_text = EMPTY_PLACEHOLDER
         if job.submit_time and job.submit_time.get('set'):
             submit = datetime.datetime.fromtimestamp(job.submit_time['number'])
             now = datetime.datetime.now()
@@ -125,23 +113,20 @@ class MyJobDetailWidget(u.WidgetWrap):
             wait_text = f"{wait_str} wait"
 
         # Reason
-        reason = getattr(job, 'state_reason', '?')
+        reason = getattr(job, 'state_reason', EMPTY_PLACEHOLDER)
         reason_short = self._abbreviate_reason(reason)
 
         # Resources
-        resources = self._get_compact_resources(job)
+        resources = compact_tres(job) or EMPTY_PLACEHOLDER
 
-        # Format based on available width
-        if self.width < 90:
-            # Narrow: essentials only
+        tier = width_tier(self.width)
+        if tier == 'narrow':
             name = self._truncate(job.name, 15)
             line = f"{icon} {job_id:>7} {name:<17} {reason_short:<8}"
-        elif self.width < 120:
-            # Medium
+        elif tier == 'medium':
             name = self._truncate(job.name, 18)
             line = f"{icon} {job_id:>7} {name:<20} {wait_text:<14} {reason_short:<10}"
         else:
-            # Wide: full detail
             name = self._truncate(job.name, 22)
             line = f"{icon} {job_id:>7} {name:<22} {wait_text:<14} {reason_short:<10} {resources:<12} {job.partition}"
 
@@ -155,7 +140,7 @@ class MyJobDetailWidget(u.WidgetWrap):
         job_id = str(job.job_id)
 
         # Runtime
-        runtime_text = ''
+        runtime_text = EMPTY_PLACEHOLDER
         if job.start_time and job.start_time.get('set') and job.end_time and job.end_time.get('set'):
             start = datetime.datetime.fromtimestamp(job.start_time['number'])
             end = datetime.datetime.fromtimestamp(job.end_time['number'])
@@ -163,62 +148,25 @@ class MyJobDetailWidget(u.WidgetWrap):
             runtime_text = format_duration(runtime)
 
         # Exit code
-        exit_text = ''
+        exit_text = EMPTY_PLACEHOLDER
         if hasattr(job, 'returncode'):
             exit_text = f"exit:{job.returncode}"
 
         # Resources
-        resources = self._get_compact_resources(job)
+        resources = compact_tres(job) or EMPTY_PLACEHOLDER
 
-        # Format based on available width
-        if self.width < 90:
-            # Narrow: essentials only
+        tier = width_tier(self.width)
+        if tier == 'narrow':
             name = self._truncate(job.name, 15)
             line = f"{icon} {job_id:>7} {name:<17} {exit_text:<12}"
-        elif self.width < 120:
-            # Medium
+        elif tier == 'medium':
             name = self._truncate(job.name, 18)
             line = f"{icon} {job_id:>7} {name:<20} {runtime_text:<12} {exit_text:<15}"
         else:
-            # Wide: full detail
             name = self._truncate(job.name, 22)
             line = f"{icon} {job_id:>7} {name:<22} {runtime_text:<12} {exit_text:<15} {resources}"
 
         return u.Text(line)
-
-    def _get_compact_resources(self, job):
-        """Extract compact resource string: 16c 64G"""
-        parts = []
-
-        # Parse TRES
-        tres_str = job.tres_alloc_str if job.tres_alloc_str else job.tres_req_str
-        if tres_str:
-            tres_dict = {}
-            for item in tres_str.split(','):
-                if '=' in item:
-                    key, val = item.split('=', 1)
-                    tres_dict[key] = val
-
-            # CPU
-            if 'cpu' in tres_dict:
-                parts.append(f"{tres_dict['cpu']}c")
-
-            # Memory (abbreviated)
-            if 'mem' in tres_dict:
-                mem = tres_dict['mem']
-                # Simplify memory display
-                if mem.endswith('G'):
-                    parts.append(mem)
-                elif mem.endswith('M'):
-                    parts.append(mem)
-                else:
-                    parts.append(mem)
-
-            # GPU
-            if 'gres/gpu' in tres_dict:
-                parts.append(f"{tres_dict['gres/gpu']}gpu")
-
-        return ' '.join(parts) if parts else ''
 
     def _abbreviate_reason(self, reason):
         """Abbreviate common reasons."""
@@ -252,7 +200,6 @@ class ScreenViewMyJobs(u.WidgetWrap):
             'COMPLETED': True,
             'FAILED': True,
             'OTHER': True,
-            'HISTORY': True  # History section (from sacct)
         }
         self.calculate_jobs_per_section()
 
@@ -267,23 +214,13 @@ class ScreenViewMyJobs(u.WidgetWrap):
         self.current_jobs_walker = u.SimpleFocusListWalker([])
         self.current_jobs_listbox = u.ListBox(self.current_jobs_walker)
 
-        left_panel = u.LineBox(
-            u.ScrollBar(self.current_jobs_listbox),
-            title="Current Jobs",
-            tlcorner='╭', trcorner='╮',
-            blcorner='╰', brcorner='╯'
-        )
+        left_panel = rounded_box(u.ScrollBar(self.current_jobs_listbox), title='Current Jobs')
 
         # === RIGHT PANEL: Job History ===
         self.history_walker = u.SimpleFocusListWalker([])
         self.history_listbox = u.ListBox(self.history_walker)
 
-        right_panel = u.LineBox(
-            u.ScrollBar(self.history_listbox),
-            title="Job History",
-            tlcorner='╭', trcorner='╮',
-            blcorner='╰', brcorner='╯'
-        )
+        right_panel = rounded_box(u.ScrollBar(self.history_listbox), title='Job History')
 
         # === TWO COLUMN LAYOUT ===
         self.columns = u.Columns([
@@ -351,14 +288,8 @@ class ScreenViewMyJobs(u.WidgetWrap):
         # Get available width (40% of screen for left panel)
         available_width = int(self.main_screen.width * 0.40) - 3 if hasattr(self.main_screen, 'width') else 50
 
-        # Icons for state headers
-        state_icons = {
-            'RUNNING': '▶ RUNNING',
-            'PENDING': '⏸ PENDING',
-            'COMPLETED': '✓ COMPLETED',
-            'FAILED': '✗ FAILED/TIMEOUT',
-            'OTHER': '• OTHER'
-        }
+        # 'FAILED' bucket also covers TIMEOUT; the header keeps the legacy label.
+        section_labels = {'FAILED': 'FAILED/TIMEOUT'}
 
         # Show jobs grouped by state - most important first (only if user has current jobs)
         if user_jobs:
@@ -370,10 +301,9 @@ class ScreenViewMyJobs(u.WidgetWrap):
 
                     # Modern section header with expand/collapse indicator
                     expand_indicator = '▼' if not collapsed else '▶'
-                    header_text = f"═══ {expand_indicator} {state_icons[state]} ({total_count}) "
-                    remaining_width = max(available_width - len(header_text), 20)
-                    separator = "═" * remaining_width
-                    widgets.append(u.AttrMap(u.Text(f"{header_text}{separator}"), 'jobheader'))
+                    label = section_labels.get(state, state)
+                    icon = state_icon(state, style='detail')
+                    widgets.append(SectionHeader(f"{expand_indicator} {icon} {label} ({total_count})"))
 
                     # Sort jobs
                     sorted_jobs = sorted(state_jobs, key=lambda j: j.job_id, reverse=True)
