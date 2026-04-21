@@ -109,14 +109,18 @@ def _snapshot_job(job):
 
 
 def _format_clock_ts(epoch_ts):
-    """`HH:MM` if today, else `dd/mm HH:MM` — matches the main job-list view."""
+    """`HH:MM` if today, else `dd/mm@HH:MM`.
+
+    The `@` glues the date to the time so the row reads cleanly when the
+    next column is also `HH:MM` — a plain space looks like another column.
+    """
     if not epoch_ts:
         return EMPTY_PLACEHOLDER
     import datetime as _dt
     t = _dt.datetime.fromtimestamp(int(epoch_ts))
     if t.date() == _dt.datetime.now().date():
         return t.strftime('%H:%M')
-    return t.strftime('%d/%m %H:%M')
+    return t.strftime('%d/%m@%H:%M')
 
 
 # ----- Column layouts -----------------------------------------------------
