@@ -15,8 +15,13 @@ are recomputed each refresh from the current job set. Section 3 uses
 `start_time` as the source of truth — earlier versions tried to detect a
 PENDING→RUNNING state transition across two refresh ticks, which silently
 dropped jobs that scheduled fast enough to appear as RUNNING on the very
-first tick we saw them. Section 2 excludes anything that section 3 is showing
-so the lifecycle stays mutually exclusive.
+first tick we saw them.
+
+Sections 2 and 3 are *not* mutually exclusive: a short, freshly-started job
+(e.g. 5 min runtime) is both "just started" and "finishing soon" and shows
+in both. They answer different questions — recent scheduling activity vs
+imminent completion — and forcing exclusion would have hidden short jobs
+from the finishing list entirely.
 
 The partition-grouped pending list that used to sit in section 4 now lives in
 the Scheduler view (F8); F7 is exclusively the "what's about to change" view.
@@ -465,8 +470,12 @@ class ScreenViewQueue(u.WidgetWrap):
             is_completing = 'COMPLETING' in states
             if not (is_running or is_completing):
                 continue
-            if _is_just_started(j, now):
-                continue  # already shown in the "Just started" section
+            # No exclusion against "Just started" — a short job (e.g. 5 min)
+            # would otherwise spend its entire life in "Just started" and
+            # never bubble up here. The two sections answer different
+            # questions ("what just got scheduled?" vs "what's about to
+            # finish?") and a fresh, soon-to-end job legitimately belongs
+            # in both.
             if is_completing:
                 # Epilog/cleanup — sort to the very top of the section since
                 # they're the closest to vanishing into "Just ended".
