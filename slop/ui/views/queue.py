@@ -140,60 +140,68 @@ def _format_clock_ts(epoch_ts):
 # Weight columns absorb the leftover horizontal space — the row scales with
 # the terminal instead of being truncated at hard-coded widths.
 
+# Shared column widths so the same column lands at the same horizontal
+# position in every section. Only `Name` is weighted — it soaks up the
+# residual width so wider terminals show more of the job name.
+_JOBID_W     = 10
+_USER_W      = 22
+_ACCOUNT_W   = 14
+_PARTITION_W = 12
+_RESOURCES_W = 22
+_NODES_W     = 14
+
+USER      = ('User',      'left', 'given', _USER_W,      'ellipsis')
+ACCOUNT   = ('Account',   'left', 'given', _ACCOUNT_W,   'ellipsis')
+PARTITION = ('Partition', 'left', 'given', _PARTITION_W, 'ellipsis')
+RESOURCES = ('Resources', 'left', 'given', _RESOURCES_W, 'ellipsis')
+NODES     = ('Nodes',     'left', 'given', _NODES_W,     'ellipsis')
+NAME      = ('Name',      'left', 'weight', 1,           'ellipsis')
+
 ENDED_LAYOUT = [
-    ('St',        'right', 'given',   3, 'clip'),
-    ('Job ID',    'right', 'given',  10, 'clip'),
-    ('User',      'left',  'weight',  3, 'ellipsis'),
-    ('Account',   'left',  'weight',  3, 'ellipsis'),
-    ('Partition', 'left',  'weight',  3, 'ellipsis'),
-    ('Submitted',      'left',  'given',  11, 'clip'),
-    ('Ended',          'left',  'given',  11, 'clip'),
-    ('Requested/Used', 'right', 'given',  16, 'clip'),
-    ('Exit',           'left',  'given',  11, 'clip'),
-    ('Waited',    'right', 'given',   9, 'clip'),
-    ('Resources', 'left',  'weight',  4, 'ellipsis'),
-    ('Nodes',     'left',  'weight',  4, 'ellipsis'),
-    ('Name',      'left',  'weight',  6, 'ellipsis'),
+    ('St',     'right', 'given', 3,         'clip'),
+    ('Job ID', 'right', 'given', _JOBID_W,  'clip'),
+    USER, ACCOUNT, PARTITION,
+    ('Submitted',      'left',  'given', 11, 'clip'),
+    ('Ended',          'left',  'given', 11, 'clip'),
+    ('Requested/Used', 'right', 'given', 16, 'clip'),
+    ('Exit',           'left',  'given', 11, 'clip'),
+    ('Waited',         'right', 'given', 9,  'clip'),
+    RESOURCES, NODES, NAME,
 ]
 
 FINISHING_LAYOUT = [
-    ('St',        'right', 'given',   3, 'clip'),
-    ('Job ID',    'right', 'given',  10, 'clip'),
-    ('User',      'left',  'weight',  3, 'ellipsis'),
-    ('Account',   'left',  'weight',  3, 'ellipsis'),
-    ('Partition', 'left',  'weight',  3, 'ellipsis'),
-    ('Remaining', 'right', 'given',  12, 'clip'),
-    ('Ran',       'right', 'given',  11, 'clip'),
-    ('Resources', 'left',  'weight',  4, 'ellipsis'),
-    ('Nodes',     'left',  'weight',  4, 'ellipsis'),
-    ('Name',      'left',  'weight',  6, 'ellipsis'),
+    ('St',     'right', 'given', 3,         'clip'),
+    ('Job ID', 'right', 'given', _JOBID_W,  'clip'),
+    USER, ACCOUNT, PARTITION,
+    ('Remaining', 'right', 'given', 12, 'clip'),
+    ('Ran',       'right', 'given', 11, 'clip'),
+    RESOURCES, NODES, NAME,
 ]
 
 STARTED_LAYOUT = [
-    ('St',        'right', 'given',   3, 'clip'),
-    ('Job ID',    'right', 'given',  10, 'clip'),
-    ('User',      'left',  'weight',  3, 'ellipsis'),
-    ('Account',   'left',  'weight',  3, 'ellipsis'),
-    ('Partition', 'left',  'weight',  3, 'ellipsis'),
-    ('Waited',    'right', 'given',  10, 'clip'),
-    ('Ran',       'right', 'given',  10, 'clip'),
-    ('Limit',     'right', 'given',   9, 'clip'),
-    ('Resources', 'left',  'weight',  4, 'ellipsis'),
-    ('Nodes',     'left',  'weight',  4, 'ellipsis'),
-    ('Name',      'left',  'weight',  6, 'ellipsis'),
+    ('St',     'right', 'given', 3,         'clip'),
+    ('Job ID', 'right', 'given', _JOBID_W,  'clip'),
+    USER, ACCOUNT, PARTITION,
+    ('Waited', 'right', 'given', 10, 'clip'),
+    ('Ran',    'right', 'given', 10, 'clip'),
+    ('Limit',  'right', 'given',  9, 'clip'),
+    RESOURCES, NODES, NAME,
 ]
 
+# Pending jobs have no allocated nodes; that column is blank-padded so
+# horizontal alignment with the other sections is preserved.
+_BLANK_NODES = ('', 'left', 'given', _NODES_W, 'clip')
+
 ABOUT_LAYOUT = [
-    ('ETA',       'left',  'given',  14, 'clip'),
-    ('Job ID',    'right', 'given',  10, 'clip'),
-    ('User',      'left',  'weight',  3, 'ellipsis'),
-    ('Partition', 'left',  'weight',  3, 'ellipsis'),
-    ('Priority',  'right', 'given',   8, 'clip'),
-    ('Reason',    'left',  'given',  14, 'clip'),
-    ('Resources', 'left',  'weight',  4, 'ellipsis'),
-    ('Time',      'right', 'given',   9, 'clip'),
-    ('Waited',    'right', 'given',   9, 'clip'),
-    ('Name',      'left',  'weight',  6, 'ellipsis'),
+    ('St',     'right', 'given', 3,        'clip'),
+    ('Job ID', 'right', 'given', _JOBID_W, 'clip'),
+    USER, ACCOUNT, PARTITION,
+    ('ETA',       'left',  'given', 11, 'clip'),
+    ('Priority',  'right', 'given',  8, 'clip'),
+    ('Reason',    'left',  'given', 14, 'clip'),
+    ('Time',      'right', 'given',  9, 'clip'),
+    ('Waited',    'right', 'given',  9, 'clip'),
+    RESOURCES, _BLANK_NODES, NAME,
 ]
 
 
@@ -348,14 +356,18 @@ class AboutToStartJobWidget(_JobRow):
         priority = job_priority(job)
         reason = getattr(job, 'state_reason', EMPTY_PLACEHOLDER) or EMPTY_PLACEHOLDER
         user = getattr(job, 'user_name', EMPTY_PLACEHOLDER)
+        account = getattr(job, 'account', EMPTY_PLACEHOLDER) or EMPTY_PLACEHOLDER
         partition = job_partition(job)
         resources = compact_tres(job) or EMPTY_PLACEHOLDER
         tlim = time_limit_str(job)
         wait = format_wait(getattr(job, 'submit_time', {}))
         name = job.name or EMPTY_PLACEHOLDER
+        states = getattr(job, 'job_state', None) or []
+        state = state_short(states[0]) if states else 'PD'
 
-        values = [eta, job.job_id, user, partition, priority, reason,
-                  resources, tlim, wait, name]
+        values = [state, job.job_id, user, account, partition,
+                  eta, priority, reason, tlim, wait,
+                  resources, '', name]
         # Soonest jobs (within 5 min or already overdue) get the success attr
         # so they pop visually; everything else stays neutral.
         if diff is not None and diff < 300:
