@@ -5,7 +5,7 @@ from slop.slurm import is_running, is_ended, is_pending, reasons
 from slop.utils import format_duration, nice_tres
 from slop.ui.constants import EMPTY_PLACEHOLDER
 from slop.ui.state_style import state_attr
-from slop.ui.widgets import rounded_box
+from slop.ui.widgets import rounded_box, GenericOverlayText
 
 
 class JobInfoOverlay(u.WidgetWrap):
@@ -35,6 +35,32 @@ class JobInfoOverlay(u.WidgetWrap):
         body = u.AttrMap(rounded_box(listbox, title=f"Job {job.job_id} - {state}"),
                          'normal', 'normal')
         super().__init__(body)
+
+    def keypress(self, size, key):
+        if key == 'h':
+            self._open_user_history()
+            return None
+        return super().keypress(size, key)
+
+    def _open_user_history(self):
+        """Close this overlay and open the report view for the job's owner."""
+        sc = self.main_screen
+        if sc is None:
+            return
+        username = self.job.user_name
+        sc.close_overlay()
+        sc.open_overlay(GenericOverlayText(
+            sc, f"Loading history for {username}...\n\nFetching account usage data..."
+        ))
+        sc.loop.draw_screen()
+        result = sc.sreport_fetcher.fetch_user_utilization(username)
+        sc.close_overlay()
+        if result:
+            sc.handle_search_result(result, 'user', username)
+        else:
+            sc.open_overlay(GenericOverlayText(
+                sc, f"Failed to fetch data for {username}"
+            ))
 
     def build_widgets(self):
         """Build the overlay widgets with sections and computed fields."""

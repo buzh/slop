@@ -845,6 +845,7 @@ class ScreenViewQueue(u.WidgetWrap):
                     self.outer_pile.focus_position = idx
                 except (IndexError, ValueError):
                     pass
+                self.focused_section = idx
                 return
 
     def _focused_jobid(self):
