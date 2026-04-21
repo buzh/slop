@@ -4,15 +4,18 @@ Four sections, top to bottom, mirroring the upward flow of a job:
 
   1. Just ended       (jobs that vanished from scontrol since the last refresh)
   2. Finishing soon   (running jobs ranked by least time-remaining)
-  3. Just started     (jobs that flipped PENDING → RUNNING in the last 15 min)
+  3. Just started     (RUNNING/COMPLETING jobs whose start_time is in the
+                       last 15 min)
   4. About to start   (cluster-wide pending jobs sorted by ETA)
 
-Sections 1 and 3 are tracker-driven: entries arrive on a state transition and
-linger until either an age cap (15 min for "started") or display capacity
-forces eviction (FIFO). Section 2 is recomputed each refresh and excludes
-anything currently in the "started" tracker — a job is never both "just
-started" and "finishing soon". Section 4 is recomputed each refresh from the
-current pending set and uses Slurm's start_time estimate to order jobs.
+Section 1 is tracker-driven: entries arrive when a job vanishes from scontrol
+and linger until display capacity forces eviction (FIFO). Sections 2, 3, 4
+are recomputed each refresh from the current job set. Section 3 uses
+`start_time` as the source of truth — earlier versions tried to detect a
+PENDING→RUNNING state transition across two refresh ticks, which silently
+dropped jobs that scheduled fast enough to appear as RUNNING on the very
+first tick we saw them. Section 2 excludes anything that section 3 is showing
+so the lifecycle stays mutually exclusive.
 
 The partition-grouped pending list that used to sit in section 4 now lives in
 the Scheduler view (F8); F7 is exclusively the "what's about to change" view.
@@ -37,12 +40,28 @@ from slop.ui.views.queue_helpers import (
 )
 
 
-# Age cap for the "Just started" tracker — entries older than this are evicted
-# even if there's still room in the section.
+# How long after start_time a job still counts as "just started".
 STARTED_MAX_AGE = 15 * 60
 
 
 # ----- Lifecycle helpers --------------------------------------------------
+
+def _is_just_started(job, now):
+    """RUNNING/COMPLETING and started within the last STARTED_MAX_AGE seconds.
+
+    Replaces the old PENDING→RUNNING transition tracker, which missed jobs
+    that scheduled inside a single refresh interval (we never observed them
+    in the PENDING state, so the transition check stayed false forever).
+    """
+    states = getattr(job, 'job_state', None) or []
+    if 'RUNNING' not in states and 'COMPLETING' not in states:
+        return False
+    start_ts = ts(getattr(job, 'start_time', {}))
+    if start_ts <= 0:
+        return False
+    age = now - start_ts
+    return 0 <= age <= STARTED_MAX_AGE
+
 
 def _snapshot_job(job):
     """Capture enough data to render a row even after the job leaves scontrol."""
@@ -187,27 +206,28 @@ class FinishingJobWidget(_ReadOnlyRow):
 
 
 class StartedJobWidget(_ReadOnlyRow):
-    def __init__(self, snap, width=120):
+    def __init__(self, job, width=120):
         now = time.time()
-        wait_str = (coarse_duration(int(snap['start_ts'] - snap['submit_ts']))
-                    if snap['start_ts'] and snap['submit_ts']
-                    and snap['start_ts'] >= snap['submit_ts']
+        start_ts = ts(getattr(job, 'start_time', {}))
+        submit_ts = ts(getattr(job, 'submit_time', {}))
+        wait_str = (coarse_duration(int(start_ts - submit_ts))
+                    if start_ts and submit_ts and start_ts >= submit_ts
                     else EMPTY_PLACEHOLDER)
-        ran_str = (coarse_duration(int(now - snap['start_ts']))
-                   if snap['start_ts'] and now >= snap['start_ts']
-                   else EMPTY_PLACEHOLDER)
+        ran_str = (coarse_duration(int(now - start_ts))
+                   if start_ts and now >= start_ts else EMPTY_PLACEHOLDER)
+        state = job.job_state[0] if getattr(job, 'job_state', None) else 'R'
         text = _format_started_row(
             width,
-            state=state_short(snap['state']),
-            jobid=str(snap['jobid'])[:9],
-            user=str(snap['user'])[:12],
-            partition=str(snap['partition'])[:14],
+            state=state_short(state),
+            jobid=str(job.job_id)[:9],
+            user=str(getattr(job, 'user_name', EMPTY_PLACEHOLDER))[:12],
+            partition=job_partition(job)[:14],
             wait=wait_str[:10],
             ran=ran_str[:10],
-            resources=(snap.get('resources') or EMPTY_PLACEHOLDER)[:18],
-            name=str(snap['name'])[:25],
+            resources=(compact_tres(job) or EMPTY_PLACEHOLDER)[:18],
+            name=str(getattr(job, 'name', EMPTY_PLACEHOLDER) or EMPTY_PLACEHOLDER)[:25],
         )
-        super().__init__(u.AttrMap(u.Text(text), state_attr(snap['state'])))
+        super().__init__(u.AttrMap(u.Text(text), state_attr(state)))
 
 
 class AboutToStartJobWidget(u.WidgetWrap):
@@ -271,12 +291,9 @@ class ScreenViewQueue(u.WidgetWrap):
         self.jobs = jobs
 
         # Lifecycle trackers.
-        # started_tracker: {jobid: (snap, monotonic_ts_when_first_seen)}
         # ended_tracker:   {jobid: (snap, monotonic_ts_when_noticed_gone)}
-        # prev_jobs_by_id: jobid -> Job from last refresh, used to detect
-        #                  pending→running transitions and capture last-known
-        #                  snapshots when jobs vanish.
-        self.started_tracker = {}
+        # prev_jobs_by_id: jobid -> Job from last refresh, used to capture
+        #                  last-known snapshots when jobs vanish from scontrol.
         self.ended_tracker = {}
         self.prev_jobs_by_id = {}
 
@@ -319,9 +336,8 @@ class ScreenViewQueue(u.WidgetWrap):
 
         u.connect_signal(self.jobs, 'jobs_updated', self.on_jobs_update)
         u.WidgetWrap.__init__(self, u.AttrMap(self.container, 'bg'))
-        # Seed prev_jobs_by_id so the first transition check has something to
-        # compare against (otherwise the first refresh after startup would
-        # treat every running job as "newly started").
+        # Seed prev_jobs_by_id so the first vanish-detection pass has
+        # something to compare against.
         self.prev_jobs_by_id = {j.job_id: j for j in self.jobs.jobs}
         self.update()
 
@@ -363,43 +379,18 @@ class ScreenViewQueue(u.WidgetWrap):
 
     def _update_trackers(self):
         now_mono = time.monotonic()
-        current_jobs = list(self.jobs.jobs)
-        current_by_id = {j.job_id: j for j in current_jobs}
+        current_by_id = {j.job_id: j for j in self.jobs.jobs}
 
-        # 1) Pending → Running: a job that was PENDING last tick is now RUNNING.
-        for jid, j in current_by_id.items():
-            if jid in self.started_tracker:
-                continue
-            prev = self.prev_jobs_by_id.get(jid)
-            if prev is None:
-                continue  # never seen — don't count pre-existing jobs as "just started"
-            was_pending = 'PENDING' in (getattr(prev, 'job_state', None) or [])
-            now_running = 'RUNNING' in (getattr(j, 'job_state', None) or [])
-            if was_pending and now_running:
-                self.started_tracker[jid] = (_snapshot_job(j), now_mono)
-
-        # 2) Vanished from scontrol: present last tick, gone now → ended.
+        # Vanished from scontrol: present last tick, gone now → ended.
         for jid, prev in self.prev_jobs_by_id.items():
-            if jid in current_by_id:
-                continue
-            if jid in self.ended_tracker:
+            if jid in current_by_id or jid in self.ended_tracker:
                 continue
             self.ended_tracker[jid] = (_snapshot_job(prev), now_mono)
-            # A job that just ended cannot also be "just started".
-            self.started_tracker.pop(jid, None)
 
-        # 3) Age out the started tracker.
-        self.started_tracker = {
-            jid: entry for jid, entry in self.started_tracker.items()
-            if now_mono - entry[1] < STARTED_MAX_AGE
-        }
-
-        # 4) Capacity-driven eviction (FIFO — oldest entries leave first).
-        ended_cap, _, started_cap = self._section_capacities()
-        self.started_tracker = self._cap_dict(self.started_tracker, started_cap)
+        # Capacity-driven eviction (FIFO — oldest entries leave first).
+        ended_cap, _, _ = self._section_capacities()
         self.ended_tracker = self._cap_dict(self.ended_tracker, ended_cap)
 
-        # 5) Save current state for the next transition check.
         self.prev_jobs_by_id = current_by_id
 
     @staticmethod
@@ -446,8 +437,8 @@ class ScreenViewQueue(u.WidgetWrap):
         for j in self.jobs.jobs:
             if 'RUNNING' not in (getattr(j, 'job_state', None) or []):
                 continue
-            if j.job_id in self.started_tracker:
-                continue
+            if _is_just_started(j, now):
+                continue  # already shown in the "Just started" section
             end_ts = ts(getattr(j, 'end_time', {}))
             if end_ts <= 0:
                 continue
@@ -468,15 +459,24 @@ class ScreenViewQueue(u.WidgetWrap):
         self._set_section_contents(self.finishing_section, body)
 
     def _render_started_section(self, width, cap):
-        items = sorted(self.started_tracker.values(), key=lambda v: v[1], reverse=True)
-        title = SectionBanner(f"Just started  ({len(items)})", width=width)
+        now = time.time()
+        candidates = []
+        for j in self.jobs.jobs:
+            if not _is_just_started(j, now):
+                continue
+            start_ts = ts(getattr(j, 'start_time', {}))
+            candidates.append((start_ts, j))
+        candidates.sort(key=lambda x: -x[0])  # newest start first
+
+        title = SectionBanner(f"Just started  ({len(candidates)})", width=width)
         col_header = u.AttrMap(u.Text(_started_header(width)), 'faded')
         body = [title, col_header]
-        if not items:
-            body.append(u.Text(("faded", "  (no jobs have started since the view opened)")))
+        if not candidates:
+            body.append(u.Text(
+                ("faded", "  (no jobs have started in the last 15 minutes)")))
         else:
-            for snap, _ts_seen in items[:cap] if cap else []:
-                body.append(StartedJobWidget(snap, width=width))
+            for _, job in candidates[:cap] if cap else []:
+                body.append(StartedJobWidget(job, width=width))
         self._set_section_contents(self.started_section, body)
 
     def _render_about_section(self, width):
