@@ -174,6 +174,8 @@ class ScreenViewCluster(u.WidgetWrap):
         # === All nodes summary ===
         widgets.append(u.Divider())
         widgets.append(SectionHeader('ALL NODES BY STATE'))
+        hint = "e to compress" if self.expanded_hostlist else "e to expand"
+        widgets.append(u.Text(('faded', hint)))
 
         # Group nodes by state with better formatting
         nodes_by_state = cluster.get_nodes_by_state()
