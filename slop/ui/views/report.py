@@ -3,7 +3,7 @@
 import urwid as u
 from slop.ui.overlays import JobInfoOverlay
 from slop.ui.tab_completion import TabCompletionMixin
-from slop.ui.widgets import AccountUsageWidget, rounded_box
+from slop.ui.widgets import AccountUsageWidget, SafeListBox, rounded_box
 from slop.ui.views.report_stats import calculate_user_stats, build_stats_widgets
 from slop.slurm.history_fetcher import HistoryFetcher
 
@@ -157,7 +157,7 @@ class ScreenViewReport(TabCompletionMixin, u.WidgetWrap):
             'bg', 'normal_selected',
         )
         self.job_listwalker = u.SimpleFocusListWalker([self.status_text_widget])
-        self.job_listbox = u.ListBox(self.job_listwalker)
+        self.job_listbox = SafeListBox(self.job_listwalker)
 
         right_content = u.Pile([
             ('pack', self.header_pile),

@@ -16,6 +16,31 @@ def rounded_box(content, title=''):
                      blcorner='╰', brcorner='╯')
 
 
+class SafeListBox(u.ListBox):
+    """ListBox that drops a stale deferred-focus position before urwid
+    can dereference it.
+
+    `urwid.ListBox.set_focus()` stashes the previous focus position in
+    `set_focus_pending` so the next render can animate scroll direction.
+    When auto-refresh rebuilds a walker smaller than that stashed position
+    (e.g. user has scrolled to row 124 of an entity list and the next
+    refresh shrinks it under the cursor), `_set_focus_complete` raises
+    `IndexError: focus index is out of range`. We drop the pending state
+    when the stored row no longer exists — only the scroll-direction
+    hint is lost, never the focus itself.
+    """
+
+    def _set_focus_complete(self, size, focus):
+        pending = self.set_focus_pending
+        if isinstance(pending, tuple) and len(pending) == 3:
+            _, _, focus_pos = pending
+            if isinstance(focus_pos, int) and (
+                not len(self._body) or focus_pos >= len(self._body)
+            ):
+                self.set_focus_pending = None
+        return super()._set_focus_complete(size, focus)
+
+
 class ChildJobWidget(u.WidgetWrap):
     def __init__(self, job):
         self.job = job
@@ -370,7 +395,7 @@ class HelpOverlay(u.WidgetWrap):
                 # Plain string
                 widgets.append(u.Text(line))
 
-        listbox = u.ListBox(u.SimpleFocusListWalker(widgets))
+        listbox = SafeListBox(u.SimpleFocusListWalker(widgets))
         widget = u.AttrMap(rounded_box(listbox, title=title), 'bg')
         u.WidgetWrap.__init__(self, widget)
 
