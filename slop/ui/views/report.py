@@ -1,5 +1,8 @@
 """Comprehensive user/account report view combining sreport and sacct data."""
 
+import subprocess
+import threading
+
 import urwid as u
 from slop.ui.overlays import JobInfoOverlay
 from slop.ui.tab_completion import TabCompletionMixin
@@ -29,6 +32,7 @@ class ScreenViewReport(TabCompletionMixin, u.WidgetWrap):
         self.status_text_widget = None
         self.selected_job = None
         self._redraw_pending = False
+        self._user_search_in_flight = False
 
         self._init_completion()
         self._build_knowledge_base()
@@ -72,33 +76,48 @@ class ScreenViewReport(TabCompletionMixin, u.WidgetWrap):
             self.search_suggestions.set_text(("faded", "No matches"))
 
     def _perform_user_search(self):
-        """Search for a new user and reload the view."""
+        """Search for a new user and reload the view (async)."""
         username = self.search_edit.get_edit_text().strip()
-        if not username:
+        if not username or self._user_search_in_flight:
+            return
+        if not hasattr(self.main_screen, 'open_search'):
             return
 
-        if hasattr(self.main_screen, 'open_search'):
-            import subprocess
+        self._user_search_in_flight = True
+        self.search_suggestions.set_text(("faded", f"Looking up {username}..."))
+        self.main_screen.loop.draw_screen()
+
+        def worker():
             try:
-                result = subprocess.run(
+                check = subprocess.run(
                     ['getent', 'passwd', username],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
-                    timeout=2
+                    timeout=2,
                 )
-                if result.returncode != 0:
-                    self.search_suggestions.set_text(("error", f"User '{username}' not found"))
-                    return
-            except Exception:
-                pass
+                if check.returncode != 0:
+                    payload = ('not_found', None)
+                else:
+                    from slop.slurm import SreportFetcher
+                    sreport = SreportFetcher()
+                    payload = ('ok', sreport.fetch_user_utilization(username))
+            except Exception as e:
+                payload = ('error', str(e))
+            self.main_screen.schedule_main(self._on_user_search_done, username, payload)
 
-            from slop.slurm import SreportFetcher
-            sreport = SreportFetcher()
-            result = sreport.fetch_user_utilization(username)
-            if result:
-                self.main_screen.handle_search_result(result, 'user', username)
-            else:
-                self.search_suggestions.set_text(("error", f"No data for user '{username}'"))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_user_search_done(self, username, payload):
+        self._user_search_in_flight = False
+        status, data = payload
+        if status == 'not_found':
+            self.search_suggestions.set_text(("error", f"User '{username}' not found"))
+        elif status == 'error':
+            self.search_suggestions.set_text(("error", f"Search error: {data}"))
+        elif data:
+            self.main_screen.handle_search_result(data, 'user', username)
+        else:
+            self.search_suggestions.set_text(("error", f"No data for user '{username}'"))
 
     def _build_ui(self):
         """Build the four panels and assemble the two-column layout."""

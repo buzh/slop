@@ -65,7 +65,14 @@ class ViewManager:
         if view_id != self.current:
             self.sc.jobs.reset_array_collapse()
         self.current = view_id
-        self.sc.frame.body = u.AttrMap(screen, 'bg')
+        new_body = u.AttrMap(screen, 'bg')
+        # If an overlay (e.g. the splash) is hiding the body, rewrite the
+        # bottom of the stack so dismissing the overlay restores the view
+        # the user just picked, not the one current when the overlay opened.
+        if self.sc.overlay_stack:
+            self.sc.overlay_stack[0] = new_body
+        else:
+            self.sc.frame.body = new_body
         screen.update()
         self.sc.header.update(header_text)
         self.sc.footer.update(footer_type, f1_label=self.f1_label())
@@ -100,6 +107,12 @@ class ViewManager:
             self.report = ScreenViewReport(
                 self.sc, 'user', self.sc.current_username, [], self.sc.adaptive_sacct,
             )
+        else:
+            # If the previous fetch finished without data (failure or empty),
+            # let re-opening the view kick off a retry.
+            hf = getattr(self.report, 'history_fetcher', None)
+            if hf is not None and not hf.loading and not hf.history_jobs:
+                hf.start_fetch(self.report.entity_type, self.report.entity_name)
         entity_label = "User" if self.report.entity_type == 'user' else "Account"
         self.show(REPORT, self.report,
                   f"{entity_label} Report - {self.report.entity_name}", 'history')
@@ -108,10 +121,21 @@ class ViewManager:
 
     def install_report(self, report_screen, entity_type, entity_name):
         """Replace the current report with a freshly built one and focus it."""
+        # Cancel the previous report's in-flight sacct fetch (if any) so its
+        # eventual completion callback doesn't mutate orphaned widgets and the
+        # accounting database isn't pestered with abandoned queries.
+        if self.report is not None and self.report is not report_screen:
+            prev_fetcher = getattr(self.report, 'history_fetcher', None)
+            if prev_fetcher is not None:
+                prev_fetcher.cancel()
         self.report = report_screen
         entity_label = "User" if entity_type == 'user' else "Account"
         self.current = REPORT
-        self.sc.frame.body = u.AttrMap(report_screen, 'bg')
+        new_body = u.AttrMap(report_screen, 'bg')
+        if self.sc.overlay_stack:
+            self.sc.overlay_stack[0] = new_body
+        else:
+            self.sc.frame.body = new_body
         self.sc.header.update(f"{entity_label} Report - {entity_name}")
         self.sc.footer.update('history', f1_label=self.f1_label())
 

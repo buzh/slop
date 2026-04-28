@@ -22,6 +22,7 @@ class HistoryFetcher:
         self.loading = False
         self.fetch_started = False
         self.sacct_thread = None
+        self._cancelled = False
 
         # Callbacks - set by caller
         self.on_progress = None  # Called with progress status dict
@@ -44,8 +45,7 @@ class HistoryFetcher:
             """Worker thread to fetch sacct data."""
             def progress_callback(status):
                 """Handle progress updates from sacct fetcher."""
-                # Update UI on main thread
-                self.main_screen.loop.set_alarm_in(0, lambda *_: self._handle_progress(status))
+                self.main_screen.schedule_main(self._handle_progress, status)
 
             # Fetch data
             if entity_type == 'user':
@@ -53,20 +53,32 @@ class HistoryFetcher:
             else:
                 result = self.adaptive_sacct.fetch_account_jobs(entity_name, progress_callback)
 
-            # Update UI with result
-            self.main_screen.loop.set_alarm_in(0, lambda *_: self._handle_complete(result))
+            self.main_screen.schedule_main(self._handle_complete, result)
 
         # Start thread
         self.sacct_thread = threading.Thread(target=fetch_worker, daemon=True)
         self.sacct_thread.start()
 
+    def cancel(self):
+        """Mark the in-flight fetch as cancelled.
+
+        The worker thread keeps running (sacct is non-cancellable), but its
+        eventual progress / completion callbacks become no-ops, so an orphaned
+        fetcher can't mutate widgets that have been replaced.
+        """
+        self._cancelled = True
+
     def _handle_progress(self, status):
         """Handle progress updates."""
+        if self._cancelled:
+            return
         if self.on_progress:
             self.on_progress(status)
 
     def _handle_complete(self, result):
         """Handle sacct fetch completion."""
+        if self._cancelled:
+            return
         self.loading = False
 
         if result and result.get('jobs'):
@@ -93,8 +105,10 @@ class HistoryFetcher:
             if self.on_complete:
                 self.on_complete(self.history_jobs, meta)
         else:
-            # Failed or no jobs
+            # Failed or no jobs — clear `fetch_started` so the caller can retry
+            # (e.g. the user re-opens F6 after a transient sacct timeout).
             self.history_jobs = []
+            self.fetch_started = False
             if self.on_complete:
                 self.on_complete([], {})
 

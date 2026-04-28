@@ -3,6 +3,7 @@
 import urwid as u
 import subprocess
 import re
+import threading
 
 from slop.ui.tab_completion import TabCompletionMixin
 from slop.ui.widgets import rounded_box
@@ -25,6 +26,8 @@ class SearchOverlay(TabCompletionMixin, u.WidgetWrap):
         self.adaptive_sacct = adaptive_sacct
         self.on_result = on_result
         self.overlay_height = 10
+        self._search_in_flight = False
+        self._cancelled = False
 
         # Build knowledge base from current cluster state
         self._build_knowledge_base()
@@ -127,7 +130,13 @@ class SearchOverlay(TabCompletionMixin, u.WidgetWrap):
 
     def keypress(self, size, key):
         if key == 'esc':
+            self._cancelled = True
             self.main_screen.close_overlay()
+            return None
+
+        # While a background search is in flight, swallow input so the user
+        # can't kick off another query or edit the field mid-flight.
+        if self._search_in_flight:
             return None
 
         if key == 'enter':
@@ -199,44 +208,29 @@ class SearchOverlay(TabCompletionMixin, u.WidgetWrap):
         search_type, confidence = self._detect_search_type(query)
 
         if search_type == 'job':
-            # Search for specific job ID in current jobs first
-            self.status_text.set_text(f"Searching for job {query}...")
-            self.main_screen.loop.draw_screen()
-
-            # Check current jobs
-            job_found = False
+            # Cheap path: look in the in-memory job list first.
             if hasattr(self.main_screen, 'jobs'):
                 for job in self.main_screen.jobs.jobs:
                     if str(job.job_id) == query:
-                        # Show job details overlay
                         from slop.ui.overlays import JobInfoOverlay
                         self.main_screen.close_overlay()
                         self.main_screen.open_overlay(JobInfoOverlay(job, self.main_screen))
-                        job_found = True
-                        break
-
-            if not job_found:
-                # Not in current jobs - search history via sacct
-                self.status_text.set_text(f"Searching history for job {query}...")
-                self.main_screen.loop.draw_screen()
-                result = self.adaptive_sacct.fetch_job_sync(query)
-                if result and result.get('jobs'):
-                    # Show as history result
-                    self.main_screen.close_overlay()
-                    self.on_result(result, 'job', query)
-                else:
-                    self.status_text.set_text(("error", f"Job {query} not found"))
+                        return
+            # Fall through to sacct in a thread.
+            self._run_in_background(
+                f"Searching history for job {query}...",
+                lambda: self.adaptive_sacct.fetch_job_sync(query),
+                lambda result: self._handle_history_result(
+                    result, 'job', query, f"Job {query} not found"),
+            )
 
         elif search_type == 'node':
-            # Search for jobs on a node
-            self.status_text.set_text(f"Fetching history for node {query}...")
-            self.main_screen.loop.draw_screen()
-            result = self.adaptive_sacct.fetch_node_history_sync(query)
-            if result and result.get('jobs'):
-                self.main_screen.close_overlay()
-                self.on_result(result, 'node', query)
-            else:
-                self.status_text.set_text(("error", f"No jobs found on node {query}"))
+            self._run_in_background(
+                f"Fetching history for node {query}...",
+                lambda: self.adaptive_sacct.fetch_node_history_sync(query),
+                lambda result: self._handle_history_result(
+                    result, 'node', query, f"No jobs found on node {query}"),
+            )
 
         elif search_type == 'account':
             # Account history view not yet implemented
@@ -245,21 +239,61 @@ class SearchOverlay(TabCompletionMixin, u.WidgetWrap):
             self.main_screen.open_overlay(GenericOverlayText(self.main_screen, f"Account history for '{query}'\n\nFull account report view coming soon.\nUse F2 (Accounts view) to browse jobs by account."))
 
         else:  # user
-            # Check if user exists on the system
-            self.status_text.set_text(f"Checking user {query}...")
-            self.main_screen.loop.draw_screen()
+            self._run_in_background(
+                f"Looking up user {query}...",
+                lambda: self._fetch_user_data(query),
+                lambda result: self._handle_user_result(result, query),
+            )
 
-            if not self._check_user_exists(query):
-                self.status_text.set_text(("error", f"User '{query}' not found"))
-                return
+    def _fetch_user_data(self, username):
+        """Worker-thread helper: validate user, then fetch sreport data."""
+        if not self._check_user_exists(username):
+            return ('not_found', None)
+        try:
+            data = self.sreport_fetcher.fetch_user_utilization(username)
+        except Exception as e:
+            return ('error', str(e))
+        return ('ok', data)
 
-            # Fetch account utilization using sreport
-            self.status_text.set_text(f"Fetching usage statistics for {query}...")
-            self.main_screen.loop.draw_screen()
+    def _run_in_background(self, status_msg, work, on_done):
+        """Run `work` on a daemon thread; deliver result to `on_done` on the main loop."""
+        self._search_in_flight = True
+        self.status_text.set_text(status_msg)
+        self.main_screen.loop.draw_screen()
 
-            result = self.sreport_fetcher.fetch_user_utilization(query)
-            if result:
-                self.main_screen.close_overlay()
-                self.on_result(result, 'user', query)
-            else:
-                self.status_text.set_text(("error", f"Could not fetch usage data for user '{query}'"))
+        def worker():
+            try:
+                result = work()
+            except Exception as e:
+                result = ('__error__', str(e))
+            self.main_screen.schedule_main(self._deliver, on_done, result)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _deliver(self, on_done, result):
+        self._search_in_flight = False
+        if self._cancelled:
+            return
+        if isinstance(result, tuple) and result and result[0] == '__error__':
+            self.status_text.set_text(("error", f"Search error: {result[1]}"))
+            return
+        on_done(result)
+
+    def _handle_history_result(self, result, search_type, query, empty_msg):
+        if result and result.get('jobs'):
+            self.main_screen.close_overlay()
+            self.on_result(result, search_type, query)
+        else:
+            self.status_text.set_text(("error", empty_msg))
+
+    def _handle_user_result(self, result, query):
+        status, data = result
+        if status == 'not_found':
+            self.status_text.set_text(("error", f"User '{query}' not found"))
+        elif status == 'error':
+            self.status_text.set_text(("error", f"Search error: {data}"))
+        elif data:
+            self.main_screen.close_overlay()
+            self.on_result(data, 'user', query)
+        else:
+            self.status_text.set_text(("error", f"Could not fetch usage data for user '{query}'"))
