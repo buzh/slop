@@ -135,17 +135,22 @@ def _pulse_section(stats, gpu_stats, width):
         ],
     ))
 
-    # CPU row
-    cpu_pct = stats['cpu_util']
-    rows.append(_labeled('CPU', _bar_markup(stats['cpus_alloc'], stats['cpus_total'], bar_w)
-                         + [('normal', f"  {stats['cpus_alloc']}/{stats['cpus_total']} cores  {cpu_pct:5.1f}%")]))
+    # CPU and Memory rows — pad both value strings to a common width so the
+    # percentage column lines up between them.
+    cpu_val = f"{stats['cpus_alloc']}/{stats['cpus_total']} cores"
+    mem_val = (f"{_fmt_bytes_mb(stats['mem_alloc_mb'])}/"
+               f"{_fmt_bytes_mb(stats['mem_total_mb'])}")
+    val_w = max(len(cpu_val), len(mem_val))
 
-    # Memory row
+    cpu_pct = stats['cpu_util']
+    rows.append(_labeled('CPU',
+        _bar_markup(stats['cpus_alloc'], stats['cpus_total'], bar_w)
+        + [('normal', f"  {cpu_val:>{val_w}s}  {cpu_pct:5.1f}%")]))
+
     mem_pct = stats['mem_util']
-    mem_meta = (f"  {_fmt_bytes_mb(stats['mem_alloc_mb'])} / "
-                f"{_fmt_bytes_mb(stats['mem_total_mb'])}  {mem_pct:5.1f}%")
-    rows.append(_labeled('Memory', _bar_markup(stats['mem_alloc_mb'], stats['mem_total_mb'], bar_w)
-                         + [('normal', mem_meta)]))
+    rows.append(_labeled('Memory',
+        _bar_markup(stats['mem_alloc_mb'], stats['mem_total_mb'], bar_w)
+        + [('normal', f"  {mem_val:>{val_w}s}  {mem_pct:5.1f}%")]))
 
     # GPU rows (sorted by utilisation descending so saturated types pop)
     if gpu_stats:
