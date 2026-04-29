@@ -65,14 +65,10 @@ class ViewManager:
         if view_id != self.current:
             self.sc.jobs.reset_array_collapse()
         self.current = view_id
-        new_body = u.AttrMap(screen, 'bg')
-        # If an overlay (e.g. the splash) is hiding the body, rewrite the
-        # bottom of the stack so dismissing the overlay restores the view
-        # the user just picked, not the one current when the overlay opened.
-        if self.sc.overlay_stack:
-            self.sc.overlay_stack[0] = new_body
-        else:
-            self.sc.frame.body = new_body
+        # `replace_bottom_body` rewrites the deepest layer of the overlay
+        # chain when overlays are up, so dismissing them reveals the view the
+        # user just picked rather than the one current when the overlay opened.
+        self.sc.replace_bottom_body(u.AttrMap(screen, 'bg'))
         screen.update()
         self.sc.header.update(header_text)
         self.sc.footer.update(footer_type, f1_label=self.f1_label())
@@ -131,11 +127,7 @@ class ViewManager:
         self.report = report_screen
         entity_label = "User" if entity_type == 'user' else "Account"
         self.current = REPORT
-        new_body = u.AttrMap(report_screen, 'bg')
-        if self.sc.overlay_stack:
-            self.sc.overlay_stack[0] = new_body
-        else:
-            self.sc.frame.body = new_body
+        self.sc.replace_bottom_body(u.AttrMap(report_screen, 'bg'))
         self.sc.header.update(f"{entity_label} Report - {entity_name}")
         self.sc.footer.update('history', f1_label=self.f1_label())
 

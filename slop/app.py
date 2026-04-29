@@ -24,6 +24,25 @@ def unhandled_input(key: str) -> None:
         raise u.ExitMainLoop()
 
 
+class _OverlayDim(u.AttrMap):
+    """Marker AttrMap used to dim the bottom layer beneath an overlay.
+
+    Distinguishing this from the plain `AttrMap(view, 'bg')` that wraps the
+    bottom view lets `close_overlay` know which `AttrMap`s to peel.
+    """
+    pass
+
+
+def _is_overlay_body(body):
+    """True if `body` is a `frame.body` wrapper that holds an Overlay."""
+    return isinstance(body, u.AttrMap) and isinstance(body.original_widget, u.Overlay)
+
+
+def _peel_dim(widget):
+    """Strip the `_OverlayDim` wrap if present, otherwise return `widget` unchanged."""
+    return widget.original_widget if isinstance(widget, _OverlayDim) else widget
+
+
 class Slop(u.WidgetWrap):
     """Main screen controller for the slop TUI."""
 
@@ -54,8 +73,7 @@ class Slop(u.WidgetWrap):
 
         # State tracking
         self.overlay_showing = False
-        self.overlay_stack = []  # Stack of previous bodies for nested overlays
-        self._splash_body = None  # frame.body assigned for the splash overlay
+        self._splash_layer = None  # AttrMap holding the splash Overlay, for targeted removal
 
         col_rows = u.raw_display.Screen().get_cols_rows()
         self.width = col_rows[0]
@@ -226,7 +244,7 @@ class Slop(u.WidgetWrap):
         """Display splash screen while initial data loads."""
         overlay = GenericOverlayText(self, "Welcome to slop\nPlease wait while fetching job data")
         self.open_overlay(overlay)
-        self._splash_body = self.frame.body
+        self._splash_layer = self.frame.body  # AttrMap wrapping the splash Overlay
 
         def on_job_update(*_args):
             self._dismiss_splash()
@@ -235,22 +253,36 @@ class Slop(u.WidgetWrap):
         u.connect_signal(self.jobs, 'jobs_updated', on_job_update)
 
     def _dismiss_splash(self):
-        """Remove the splash overlay wherever it sits in the overlay stack.
+        """Remove the splash overlay wherever it sits in the overlay chain.
 
         The user may have opened other overlays on top of (or dismissed) the
-        splash before initial data arrives. Don't blindly pop the top.
+        splash before initial data arrives. Walk the chain to find the splash
+        layer and unlink it from its parent — if it's the topmost overlay this
+        reduces to `close_overlay`.
         """
-        body = self._splash_body
-        self._splash_body = None
-        if body is None:
+        splash_layer = self._splash_layer
+        self._splash_layer = None
+        if splash_layer is None:
             return
-        if self.frame.body is body:
+        if self.frame.body is splash_layer:
             self.close_overlay()
-        else:
-            try:
-                self.overlay_stack.remove(body)
-            except ValueError:
-                pass
+            return
+        # Splash is buried under newer overlays. Find the parent overlay whose
+        # bottom_w (after peeling its dim wrap) is the splash layer, then
+        # re-link past it.
+        parent_body = self.frame.body
+        while _is_overlay_body(parent_body):
+            ov = parent_body.original_widget
+            bottom = ov.bottom_w
+            inner = _peel_dim(bottom)
+            if inner is splash_layer:
+                splash_below = _peel_dim(splash_layer.original_widget.bottom_w)
+                if isinstance(bottom, _OverlayDim):
+                    ov.bottom_w = _OverlayDim(splash_below, attr_map=bottom.get_attr_map())
+                else:
+                    ov.bottom_w = splash_below
+                return
+            parent_body = inner
 
     # --- Input ---------------------------------------------------------------
 
@@ -294,25 +326,23 @@ class Slop(u.WidgetWrap):
 
         return super().keypress(size, key)
 
-    # --- Overlay stack -------------------------------------------------------
+    # --- Overlay chain -------------------------------------------------------
+    # Overlays compose natively as nested `urwid.Overlay` widgets: each new
+    # overlay wraps the current `frame.body` as its `bottom_w`. The chain is
+    # the linked list rooted at `frame.body`, so there is no parallel stack
+    # that can drift out of sync with the visible widget.
 
     def open_overlay(self, widget, height=None):
-        """Display an overlay widget on top of current screen."""
-        MAX_OVERLAY_DEPTH = 3
-        if len(self.overlay_stack) >= MAX_OVERLAY_DEPTH:
-            return
-
+        """Display an overlay widget on top of the current frame body."""
         bottom = self.frame.body
-        self.overlay_stack.append(bottom)
-
-        depth = len(self.overlay_stack) - 1
+        depth = self._overlay_depth(bottom)
         offset = depth * 3  # 3% offset per level for visual layering
 
         if depth > 0:
             dim_level = min(depth, 2)
             dim_attr = f'dim{dim_level}'
-            attr_map = {attr[0]: dim_attr for attr in self.palette}
-            bottom = u.AttrMap(bottom, attr_map=attr_map)
+            dim_attrs = {attr[0]: dim_attr for attr in self.palette}
+            bottom = _OverlayDim(bottom, attr_map=dim_attrs)
 
         if height is None:
             height = getattr(widget, "height", getattr(widget, "overlay_height", int(self.height * 0.8)))
@@ -327,12 +357,48 @@ class Slop(u.WidgetWrap):
         self.overlay_showing = True
 
     def close_overlay(self):
-        """Close the overlay and return to previous screen."""
-        if self.overlay_stack:
-            self.frame.body = self.overlay_stack.pop()
-            self.overlay_showing = len(self.overlay_stack) > 0
-        else:
+        """Peel the topmost overlay layer off `frame.body`."""
+        if not _is_overlay_body(self.frame.body):
             self.overlay_showing = False
+            return
+        ov = self.frame.body.original_widget
+        self.frame.body = _peel_dim(ov.bottom_w)
+        self.overlay_showing = _is_overlay_body(self.frame.body)
+
+    @staticmethod
+    def _overlay_depth(body):
+        """Count how many overlays sit above the bottom view in `body`."""
+        depth = 0
+        while _is_overlay_body(body):
+            depth += 1
+            body = _peel_dim(body.original_widget.bottom_w)
+        return depth
+
+    def replace_bottom_body(self, new_body):
+        """Replace the bottom view in the overlay chain with `new_body`.
+
+        With no overlay up this just rewrites `frame.body`. With overlays
+        stacked it descends to the deepest `Overlay` and rewrites its
+        `bottom_w` (preserving any dim wrap), so dismissing every overlay
+        reveals the freshly chosen view rather than the one that was current
+        when the overlay opened.
+        """
+        body = self.frame.body
+        if not _is_overlay_body(body):
+            self.frame.body = new_body
+            return
+        while True:
+            ov = body.original_widget
+            bottom = ov.bottom_w
+            inner = _peel_dim(bottom)
+            if _is_overlay_body(inner):
+                body = inner
+                continue
+            if isinstance(bottom, _OverlayDim):
+                ov.bottom_w = _OverlayDim(new_body, attr_map=bottom.get_attr_map())
+            else:
+                ov.bottom_w = new_body
+            return
 
     def startloop(self):
         self.loop.set_alarm_in(1, lambda loop, user_data: asyncio.create_task(self.auto_refresh()))
