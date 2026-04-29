@@ -15,7 +15,7 @@ import urwid as u
 
 from slop.models import ClusterResources
 from slop.ui.constants import EMPTY_PLACEHOLDER
-from slop.ui.widgets import rounded_box, SafeListBox
+from slop.ui.widgets import rounded_box
 from slop.utils import format_duration
 from slop.ui.views.queue_helpers import coarse_duration
 
@@ -400,14 +400,13 @@ class ScreenViewDashboard(u.WidgetWrap):
         self.jobs = jobs
         self.cluster_fetcher = cluster_fetcher
 
-        # Container Pile is rebuilt on every update — easier than threading
-        # mutable section references around, and the dashboard's three
-        # stripes are cheap to construct from scratch each tick.
-        self.walker = u.SimpleFocusListWalker([])
-        self.listbox = SafeListBox(self.walker)
+        # Plain placeholder over a top-aligned Filler — the dashboard isn't a
+        # scrollable list, so a ListBox would only add focus/scroll state that
+        # gets reset on every refresh (jumping the viewport to the bottom).
+        self.placeholder = u.WidgetPlaceholder(u.SolidFill(' '))
         u.connect_signal(self.jobs, 'jobs_updated', self.on_jobs_update)
 
-        u.WidgetWrap.__init__(self, u.AttrMap(self.listbox, 'bg'))
+        u.WidgetWrap.__init__(self, u.AttrMap(self.placeholder, 'bg'))
         self.update()
 
     def on_jobs_update(self, *_a, **_kw):
@@ -454,12 +453,5 @@ class ScreenViewDashboard(u.WidgetWrap):
         # Stack: pulse (full) → mid (you | queue) → activity ticker.
         mid = u.Columns([('weight', 50, you), ('weight', 50, queue)], dividechars=2)
 
-        new_widgets = [
-            pulse,
-            u.Divider(),
-            mid,
-            u.Divider(),
-            activity,
-        ]
-        self.walker.clear()
-        self.walker.extend(new_widgets)
+        pile = u.Pile([pulse, u.Divider(), mid, u.Divider(), activity])
+        self.placeholder.original_widget = u.Filler(pile, valign='top')

@@ -350,7 +350,7 @@ class Footer(u.WidgetWrap):
         elif screen_width < 140:
             text = "F1: Dashboard | F2: Jobs | F3: My Jobs | F5-8: Cluster/History/Queue/Sched | ?: Help | q: Quit"
         else:
-            text = ("F1: Dashboard | F2: Jobs (user/acct/partition/state) | F3: My Jobs | "
+            text = ("F1: Dashboard | F2: Jobs | F3: My Jobs | "
                     "F5: Cluster | F6: History | F7: Queue | F8: Scheduler | ?: Help | q: Quit")
 
         # Append a sub-line hint for the F2 cycling tabs.
