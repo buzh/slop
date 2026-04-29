@@ -278,29 +278,35 @@ def _you_section(user, jobs, now, free_cpu, free_gpus, free_gpu_types):
                  f"(top reason: {top_reason[0]} ×{top_reason[1]})"),
             ]))
     else:
-        rows.append(row('', [('faded', 'You have no jobs running or pending right now.')]))
+        rows.append(row('', [('faded', 'You have no jobs running or pending right now.')], gutter=0))
         rows.append(u.Text(""))
+
+        # Section headers sit on their own line so the data underneath can use
+        # the full panel width (zero gutter) instead of getting squeezed into
+        # the right side of an 18-col indent.
         gpu_avail = ', '.join(free_gpu_types) or 'none'
         gpu_word = 'GPU' if free_gpus == 1 else 'GPUs'
-        rows.append(row(
-            'Available now',
-            [('success', f"{free_cpu} free CPUs"),
-             ('normal', ' · '),
-             ('success', f"{free_gpus} free {gpu_word}"),
-             ('normal',
-              f" across {len(free_gpu_types)} type"
-              f"{'s' if len(free_gpu_types) != 1 else ''}")],
-        ))
-        rows.append(row('', [('faded', f"({gpu_avail})")]))
+        rows.append(row('Available now', [], gutter=0))
+        rows.append(row('', [
+            ('success', f"{free_cpu} free CPUs"),
+            ('normal', ' · '),
+            ('success', f"{free_gpus} free {gpu_word}"),
+            ('normal',
+             f" across {len(free_gpu_types)} type"
+             f"{'s' if len(free_gpu_types) != 1 else ''}"),
+        ], gutter=0))
+        rows.append(row('', [('faded', f"({gpu_avail})")], gutter=0))
         rows.append(u.Text(""))
-        rows.append(row('Try', [('info', '/'),
-                                     ('normal', ' look up any user, account, or job id')]))
+
+        rows.append(row('Try', [], gutter=0))
+        rows.append(row('', [('info', '/'),
+                             ('normal', '  look up any user, account, or job id')], gutter=0))
         rows.append(row('', [('info', 'F2'),
-                                  ('normal', ' browse jobs by user/acct/partition/state')]))
+                             ('normal', ' browse jobs by user/acct/partition/state')], gutter=0))
         rows.append(row('', [('info', 'F7'),
-                                  ('normal', ' watch live queue flow')]))
+                             ('normal', ' watch live queue flow')], gutter=0))
         rows.append(row('', [('info', 'h'),
-                                  ('normal', '  open your job history')]))
+                             ('normal', '  open your job history')], gutter=0))
 
     pile = u.Pile(rows)
     return rounded_box(pile, title=f'YOU ({user})')
