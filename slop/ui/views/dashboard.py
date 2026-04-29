@@ -150,7 +150,9 @@ def _pulse_section(stats, gpu_stats, width):
     # GPU rows (sorted by utilisation descending so saturated types pop)
     if gpu_stats:
         rows.append(u.Text(""))
-        gpu_bar_w = max(12, bar_w - 16 - 18)
+        # Pad every typ name to the widest one so bars line up across rows.
+        typ_w = max(14, max(len(t) for t in gpu_stats))
+        gpu_bar_w = max(12, bar_w - (typ_w + 2) - 18)
         items = sorted(gpu_stats.items(),
                        key=lambda kv: -(kv[1]['used'] / kv[1]['total']
                                         if kv[1]['total'] else 0))
@@ -163,7 +165,7 @@ def _pulse_section(stats, gpu_stats, width):
             elif pct >= 100:
                 tag = [('normal', '  '), ('error', 'saturated')]
             content = (
-                [('normal', f"{typ:<14s} ")]
+                [('normal', f"{typ:<{typ_w}s} ")]
                 + _bar_markup(s['used'], s['total'], gpu_bar_w)
                 + [('normal', f"  {s['used']}/{s['total']}  {pct:5.1f}%")]
                 + tag
@@ -262,7 +264,7 @@ def _you_section(user, jobs, now, free_cpu, free_gpu_types):
     else:
         rows.append(_labeled('', [('faded', 'You have no jobs running or pending right now.')]))
         rows.append(u.Text(""))
-        gpu_avail = ', '.join(free_gpu_types[:3]) or 'none'
+        gpu_avail = ', '.join(free_gpu_types) or 'none'
         rows.append(_labeled(
             'Available now',
             [('success', f"{free_cpu} free CPUs"),
@@ -343,7 +345,7 @@ def _queue_section(jobs, now):
             (eta_attr, f"{eta:>8}"),
             ('normal', '  '),
             ('normal', f"{user:<14}"),
-            ('faded', f" ({acct:<6}) "),
+            ('faded', f" ({acct}) "),
             ('normal', f"{cpus:>3}c {mem_gb:>4}G  "),
             ('faded', name),
         ], gutter=2))
