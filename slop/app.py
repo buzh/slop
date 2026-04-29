@@ -11,7 +11,7 @@ from slop.slurm import (
     AdaptiveSacctFetcher,
 )
 from slop.ui.widgets import Header, Footer, GenericOverlayText, HelpOverlay
-from slop.ui.views import ScreenViewReport
+from slop.ui.views import ScreenViewReport, ScreenViewSplash
 from slop.ui.overlays import ConfirmExit, SearchOverlay
 from slop.ui.style import PALETTE
 from slop.ui.help import build_help_text, build_diagnostics_text
@@ -73,7 +73,6 @@ class Slop(u.WidgetWrap):
 
         # State tracking
         self.overlay_showing = False
-        self._splash_layer = None  # AttrMap holding the splash Overlay, for targeted removal
 
         col_rows = u.raw_display.Screen().get_cols_rows()
         self.width = col_rows[0]
@@ -82,7 +81,11 @@ class Slop(u.WidgetWrap):
         # Views (must come after fetchers and `self.height` are set)
         self.current_username = os.getenv('USER') or os.getenv('USERNAME') or 'unknown'
         self.views = ViewManager(self)
-        self.body = u.AttrMap(self.views.dashboard, 'bg')
+
+        # Show the loading splash as the actual body until the first job
+        # fetch completes — avoids flashing a half-rendered dashboard.
+        self.splash = ScreenViewSplash()
+        self.body = u.AttrMap(self.splash, 'bg')
         self.frame = u.Frame(header=self.header, body=self.body, footer=self.footer)
 
         # Handle window resize (if supported by the event loop)
@@ -93,8 +96,8 @@ class Slop(u.WidgetWrap):
 
         super().__init__(self.frame)
 
-        self.show_screen_dashboard()
-        self.show_splash_screen()
+        self.header.update("Loading")
+        self._wait_for_initial_data()
 
     # --- Compatibility shims --------------------------------------------------
     # External callers (e.g., overlays, sub-views) refer to `current_view` and
@@ -224,49 +227,13 @@ class Slop(u.WidgetWrap):
             # TODO: dedicated hardware info view
             self.open_overlay(GenericOverlayText(self, f"Node search for '{search_value}' - Hardware info view coming soon!"))
 
-    def show_splash_screen(self):
-        """Display splash screen while initial data loads."""
-        overlay = GenericOverlayText(self, "Welcome to slop\nPlease wait while fetching job data")
-        self.open_overlay(overlay)
-        self._splash_layer = self.frame.body  # AttrMap wrapping the splash Overlay
-
+    def _wait_for_initial_data(self):
+        """Swap the splash for the dashboard once the first jobs fetch lands."""
         def on_job_update(*_args):
-            self._dismiss_splash()
             u.disconnect_signal(self.jobs, 'jobs_updated', on_job_update)
+            self.show_screen_dashboard()
 
         u.connect_signal(self.jobs, 'jobs_updated', on_job_update)
-
-    def _dismiss_splash(self):
-        """Remove the splash overlay wherever it sits in the overlay chain.
-
-        The user may have opened other overlays on top of (or dismissed) the
-        splash before initial data arrives. Walk the chain to find the splash
-        layer and unlink it from its parent — if it's the topmost overlay this
-        reduces to `close_overlay`.
-        """
-        splash_layer = self._splash_layer
-        self._splash_layer = None
-        if splash_layer is None:
-            return
-        if self.frame.body is splash_layer:
-            self.close_overlay()
-            return
-        # Splash is buried under newer overlays. Find the parent overlay whose
-        # bottom_w (after peeling its dim wrap) is the splash layer, then
-        # re-link past it.
-        parent_body = self.frame.body
-        while _is_overlay_body(parent_body):
-            ov = parent_body.original_widget
-            bottom = ov.bottom_w
-            inner = _peel_dim(bottom)
-            if inner is splash_layer:
-                splash_below = _peel_dim(splash_layer.original_widget.bottom_w)
-                if isinstance(bottom, _OverlayDim):
-                    ov.bottom_w = _OverlayDim(splash_below, attr_map=bottom.get_attr_map())
-                else:
-                    ov.bottom_w = splash_below
-                return
-            parent_body = inner
 
     # --- Input ---------------------------------------------------------------
 
