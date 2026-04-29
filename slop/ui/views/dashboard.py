@@ -290,6 +290,8 @@ def _you_section(user, jobs, now, free_cpu, free_gpu_types):
                                   ('normal', ' browse jobs by user/acct/partition/state')]))
         rows.append(_labeled('', [('info', 'F7'),
                                   ('normal', ' watch live queue flow')]))
+        rows.append(_labeled('', [('info', 'h'),
+                                  ('normal', '  open your job history')]))
 
     pile = u.Pile(rows)
     return rounded_box(pile, title=f'YOU ({user})')

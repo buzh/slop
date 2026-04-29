@@ -267,6 +267,11 @@ class Slop(u.WidgetWrap):
             self.show_diagnostics()
             return
 
+        # Dashboard-only shortcut: jump to history for the current user.
+        if key == 'h' and self.views.current == 0:
+            self.show_screen_report()
+            return
+
         if key == 'esc' and self.overlay_showing:
             self.close_overlay()
             return
