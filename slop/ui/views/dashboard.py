@@ -186,11 +186,11 @@ def _pulse_section(stats, gpu_stats, width):
     return rounded_box(pile, title='CLUSTER PULSE')
 
 
-def _labeled(label, markup, gutter=18):
+def _labeled(label, markup, gutter=18, wrap='clip'):
     """Row with a fixed-width label gutter on the left + markup payload."""
     text = ([(None, label.ljust(gutter))] if label else [(None, ' ' * gutter)])
     text += markup if isinstance(markup, list) else [(None, str(markup))]
-    return u.Text(text, wrap='clip')
+    return u.Text(text, wrap=wrap)
 
 
 # ----- YOU and LIVE QUEUE -------------------------------------------------
@@ -199,6 +199,12 @@ def _labeled(label, markup, gutter=18):
 def _you_section(user, jobs, now, free_cpu, free_gpus, free_gpu_types):
     """Adaptive YOU panel — running/pending detail or idle exploration prompts."""
     rows = []
+
+    # YOU rows are prose, not aligned columns — wrap rather than clip so a
+    # narrow viewport still shows the full text on a second line.
+    def row(label, markup, gutter=18):
+        return _labeled(label, markup, gutter=gutter, wrap='space')
+
     mine = [j for j in jobs if getattr(j, 'user_name', None) == user]
     running = [j for j in mine if 'RUNNING' in (getattr(j, 'job_state', None) or [])]
     pending = [j for j in mine if 'PENDING' in (getattr(j, 'job_state', None) or [])]
@@ -216,7 +222,7 @@ def _you_section(user, jobs, now, free_cpu, free_gpus, free_gpu_types):
             if bits:
                 bits += [('normal', '   ')]
             bits += [('info', f"✓ {len(completed)} just done")]
-        rows.append(_labeled('', bits))
+        rows.append(row('', bits))
         rows.append(u.Text(""))
 
         # Next to finish
@@ -227,7 +233,7 @@ def _you_section(user, jobs, now, free_cpu, free_gpus, free_gpu_types):
             et, j = running_with_end[0]
             remaining = format_duration(max(0, et - now))
             elapsed = format_duration(max(0, now - _ts(getattr(j, 'start_time', {}))))
-            rows.append(_labeled(
+            rows.append(row(
                 'Next to finish',
                 [('normal', f"job {j.job_id}  in "),
                  ('success', remaining),
@@ -235,7 +241,7 @@ def _you_section(user, jobs, now, free_cpu, free_gpus, free_gpu_types):
             ))
             name = (getattr(j, 'name', '') or '')[:60]
             if name:
-                rows.append(_labeled('', [('faded', name)]))
+                rows.append(row('', [('faded', name)]))
 
         # Next to start
         with_eta = [(_ts(getattr(j, 'start_time', {})), j)
@@ -254,7 +260,7 @@ def _you_section(user, jobs, now, free_cpu, free_gpus, free_gpu_types):
                 pos_str = f"#{pos}"
             except ValueError:
                 pos_str = '?'
-            rows.append(_labeled(
+            rows.append(row(
                 'Next to start',
                 [('normal', f"job {j.job_id}  ETA "),
                  ('info', eta),
@@ -266,17 +272,17 @@ def _you_section(user, jobs, now, free_cpu, free_gpus, free_gpu_types):
                         if (now - _ts(getattr(j, 'submit_time', {}))) > LONG_PENDING_THRESHOLD]
         if long_pending:
             top_reason = Counter(getattr(j, 'state_reason', '') for j in long_pending).most_common(1)[0]
-            rows.append(_labeled('', [
+            rows.append(row('', [
                 ('warning',
                  f"⚠ {len(long_pending)} pending >24h "
                  f"(top reason: {top_reason[0]} ×{top_reason[1]})"),
             ]))
     else:
-        rows.append(_labeled('', [('faded', 'You have no jobs running or pending right now.')]))
+        rows.append(row('', [('faded', 'You have no jobs running or pending right now.')]))
         rows.append(u.Text(""))
         gpu_avail = ', '.join(free_gpu_types) or 'none'
         gpu_word = 'GPU' if free_gpus == 1 else 'GPUs'
-        rows.append(_labeled(
+        rows.append(row(
             'Available now',
             [('success', f"{free_cpu} free CPUs"),
              ('normal', ' · '),
@@ -285,15 +291,15 @@ def _you_section(user, jobs, now, free_cpu, free_gpus, free_gpu_types):
               f" across {len(free_gpu_types)} type"
               f"{'s' if len(free_gpu_types) != 1 else ''}")],
         ))
-        rows.append(_labeled('', [('faded', f"({gpu_avail})")]))
+        rows.append(row('', [('faded', f"({gpu_avail})")]))
         rows.append(u.Text(""))
-        rows.append(_labeled('Try', [('info', '/'),
+        rows.append(row('Try', [('info', '/'),
                                      ('normal', ' look up any user, account, or job id')]))
-        rows.append(_labeled('', [('info', 'F2'),
+        rows.append(row('', [('info', 'F2'),
                                   ('normal', ' browse jobs by user/acct/partition/state')]))
-        rows.append(_labeled('', [('info', 'F7'),
+        rows.append(row('', [('info', 'F7'),
                                   ('normal', ' watch live queue flow')]))
-        rows.append(_labeled('', [('info', 'h'),
+        rows.append(row('', [('info', 'h'),
                                   ('normal', '  open your job history')]))
 
     pile = u.Pile(rows)
