@@ -31,7 +31,6 @@ class ScreenViewReport(TabCompletionMixin, u.WidgetWrap):
 
         self.status_text_widget = None
         self.selected_job = None
-        self._redraw_pending = False
         self._user_search_in_flight = False
 
         self._init_completion()
@@ -46,7 +45,6 @@ class ScreenViewReport(TabCompletionMixin, u.WidgetWrap):
         super().__init__(self.columns)
 
         self.columns.set_focus_column(1)
-        u.connect_signal(self.job_listwalker, 'modified', self.modified)
 
         self.history_fetcher.start_fetch(entity_type, entity_name)
 
@@ -85,7 +83,6 @@ class ScreenViewReport(TabCompletionMixin, u.WidgetWrap):
 
         self._user_search_in_flight = True
         self.search_suggestions.set_text(("faded", f"Looking up {username}..."))
-        self.main_screen.loop.draw_screen()
 
         def worker():
             try:
@@ -189,21 +186,6 @@ class ScreenViewReport(TabCompletionMixin, u.WidgetWrap):
         self.stats_pile = u.Pile([u.Text(("faded", "Loading statistics..."))])
         return rounded_box(u.AttrMap(u.Filler(self.stats_pile, valign='top'), 'bg'), title='Job Statistics')
 
-    def modified(self):
-        """Handle walker modification (focus change)."""
-        pass
-
-    def _schedule_redraw(self):
-        """Schedule a screen redraw with debouncing to avoid flicker."""
-        if not self._redraw_pending:
-            self._redraw_pending = True
-            self.main_screen.loop.set_alarm_in(0.05, self._do_redraw)
-
-    def _do_redraw(self, *_):
-        """Execute the actual screen redraw."""
-        self._redraw_pending = False
-        self.main_screen.loop.draw_screen()
-
     def _build_column_header(self, representative_job):
         """Build a column header widget based on a representative job's display attributes."""
         display_attr = representative_job.widget.display_attr
@@ -298,12 +280,9 @@ class ScreenViewReport(TabCompletionMixin, u.WidgetWrap):
         else:
             self.header_pile.contents = [(header_text, ('pack', None))]
 
-        u.disconnect_signal(self.job_listwalker, 'modified', self.modified)
         self.job_listwalker.clear()
         self.job_listwalker.append(u.AttrMap(detail_text, 'bg', 'normal_selected'))
         self.job_listwalker.set_focus(0)
-        u.connect_signal(self.job_listwalker, 'modified', self.modified)
-        self._schedule_redraw()
 
     def _on_history_complete(self, history_jobs, meta):
         """Handle sacct fetch completion.
@@ -326,14 +305,12 @@ class ScreenViewReport(TabCompletionMixin, u.WidgetWrap):
             header_widgets = [summary_text, u.Divider("─"), column_header, u.Divider("─")]
             self.header_pile.contents = [(w, ('pack', None)) for w in header_widgets]
 
-            u.disconnect_signal(self.job_listwalker, 'modified', self.modified)
             self.job_listwalker.clear()
             self.job_listwalker.extend([job.widget for job in history_jobs])
             for index, item in enumerate(self.job_listwalker):
                 if hasattr(item, "jobid"):
                     self.job_listwalker.set_focus(index)
                     break
-            u.connect_signal(self.job_listwalker, 'modified', self.modified)
 
             stats = calculate_user_stats(history_jobs)
             self.stats_pile.contents = [(w, ('pack', None)) for w in build_stats_widgets(stats)]
@@ -342,15 +319,11 @@ class ScreenViewReport(TabCompletionMixin, u.WidgetWrap):
             header_text = u.Text(("faded", f"Job History ({window_name}, 0 jobs) - Query: {hours}h in {duration:.1f}s"))
             self.header_pile.contents = [(header_text, ('pack', None))]
 
-            u.disconnect_signal(self.job_listwalker, 'modified', self.modified)
             self.job_listwalker.clear()
             self.job_listwalker.append(u.AttrMap(u.Text(("faded", "No jobs found in query window")), 'bg', 'normal_selected'))
             self.job_listwalker.set_focus(0)
-            u.connect_signal(self.job_listwalker, 'modified', self.modified)
 
             self.stats_pile.contents = [(u.Text(("faded", "  No jobs to analyze")), ('pack', None))]
-
-        self._schedule_redraw()
 
     def keypress(self, size, key):
         if self.columns.get_focus_column() == 0:

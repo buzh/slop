@@ -259,7 +259,6 @@ class SearchOverlay(TabCompletionMixin, u.WidgetWrap):
         """Run `work` on a daemon thread; deliver result to `on_done` on the main loop."""
         self._search_in_flight = True
         self.status_text.set_text(status_msg)
-        self.main_screen.loop.draw_screen()
 
         def worker():
             try:
