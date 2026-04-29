@@ -152,6 +152,10 @@ def _pulse_section(stats, gpu_stats, width):
         rows.append(u.Text(""))
         # Pad every typ name to the widest one so bars line up across rows.
         typ_w = max(14, max(len(t) for t in gpu_stats))
+        # Right-align used/total counts so the percentage column lines up too.
+        used_w = max(len(str(s['used'])) for s in gpu_stats.values())
+        total_w = max(len(str(s['total'])) for s in gpu_stats.values())
+        count_w = used_w + 1 + total_w  # 'used/total'
         gpu_bar_w = max(12, bar_w - (typ_w + 2) - 18)
         items = sorted(gpu_stats.items(),
                        key=lambda kv: -(kv[1]['used'] / kv[1]['total']
@@ -164,10 +168,11 @@ def _pulse_section(stats, gpu_stats, width):
                 tag = [('normal', '  '), ('info', '← available')]
             elif pct >= 100:
                 tag = [('normal', '  '), ('error', 'saturated')]
+            count_str = f"{s['used']}/{s['total']}"
             content = (
                 [('normal', f"{typ:<{typ_w}s} ")]
                 + _bar_markup(s['used'], s['total'], gpu_bar_w)
-                + [('normal', f"  {s['used']}/{s['total']}  {pct:5.1f}%")]
+                + [('normal', f"  {count_str:>{count_w}s}  {pct:5.1f}%")]
                 + tag
             )
             rows.append(_labeled(label, content))
