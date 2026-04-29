@@ -104,9 +104,17 @@ class HistoryFetcher:
             # Call completion callback with jobs and metadata
             if self.on_complete:
                 self.on_complete(self.history_jobs, meta)
+        elif result is not None:
+            # Query succeeded but the user genuinely has no history. This is a
+            # definitive answer, not a transient error — keep `fetch_started`
+            # set so the caller doesn't re-kick on the next render and tight-loop.
+            self.history_jobs = []
+            if self.on_complete:
+                self.on_complete([], result.get('meta', {}))
         else:
-            # Failed or no jobs — clear `fetch_started` so the caller can retry
-            # (e.g. the user re-opens F6 after a transient sacct timeout).
+            # Real failure (timeout, non-zero exit, in retry backoff). Clear
+            # `fetch_started` so reopening the view (F6) or the next refresh
+            # tick can retry once the database recovers.
             self.history_jobs = []
             self.fetch_started = False
             if self.on_complete:

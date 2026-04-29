@@ -239,9 +239,6 @@ class ScreenViewMyJobs(u.WidgetWrap):
     def on_jobs_update(self, *_args, **_kwargs):
         if self.is_active():
             self.update()
-            # Start history fetch if not already started
-            if self.history_fetcher and not self.history_fetcher.fetch_started:
-                self.history_fetcher.start_fetch('user', self.username)
 
     def is_active(self):
         return self.main_screen.frame.body.base_widget is self
@@ -274,9 +271,18 @@ class ScreenViewMyJobs(u.WidgetWrap):
         )
 
     def update(self):
-        """Update the job lists (both current and history)."""
+        """Update the job lists (both current and history).
+
+        Also kicks an initial sacct fetch if one hasn't been started yet.
+        Kicking belongs here (the orchestrator), not in `_update_history_jobs`,
+        because that render runs from `_on_history_complete` too — and re-kicking
+        from the failure-render path would tight-loop on users with no history
+        or a sacct outage.
+        """
         self._update_current_jobs()
         self._update_history_jobs()
+        if self.history_fetcher and not self.history_fetcher.fetch_started and self.is_active():
+            self.history_fetcher.start_fetch('user', self.username)
 
     def _update_current_jobs(self):
         """Update the left panel with current jobs."""
@@ -345,21 +351,16 @@ class ScreenViewMyJobs(u.WidgetWrap):
 
         if self.history_fetcher:
             if self.history_fetcher.loading:
-                # Show loading status
-                if self.history_status:
-                    widgets.append(u.Text(('faded', f"  {self.history_status}")))
-                else:
-                    widgets.append(u.Text(('faded', "  Loading job history...")))
+                msg = self.history_status or "Loading job history..."
+                widgets.append(u.Text(('faded', f"  {msg}")))
             elif self.history_fetcher.history_jobs:
-                # Show history jobs
                 for job in self.history_fetcher.history_jobs:
                     widgets.append(MyJobDetailWidget(job, width=available_width))
-            elif not self.history_fetcher.fetch_started:
-                # Show placeholder - fetch will start when view becomes active
-                widgets.append(u.Text(('faded', "  History will load when viewing this screen")))
+            elif self.history_status:
+                # Fetch completed without data — success-empty or failure.
+                widgets.append(u.Text(('faded', f"  {self.history_status}")))
             else:
-                # Fetch completed but no jobs
-                widgets.append(u.Text(('faded', "  No historical jobs found")))
+                widgets.append(u.Text(('faded', "  History will load when viewing this screen")))
         else:
             widgets.append(u.Text(('faded', "  History not available")))
 
@@ -369,10 +370,6 @@ class ScreenViewMyJobs(u.WidgetWrap):
         # Set focus to top of list
         if len(self.history_walker) > 0:
             self.history_walker.set_focus(0)
-
-        # Start history fetch if not already started and view is active
-        if self.history_fetcher and not self.history_fetcher.fetch_started and self.is_active():
-            self.history_fetcher.start_fetch('user', self.username)
 
     def keypress(self, size, key):
         if self.main_screen.overlay_showing:
