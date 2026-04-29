@@ -38,10 +38,12 @@ def _bar_markup(used, total, width):
 
     Colour is picked from utilisation: red ≥90%, yellow ≥75%, cyan <25%,
     otherwise green. Empty cells stay faded so the bar end is visible even
-    when nothing is allocated.
+    when nothing is allocated. Skips zero-length chunks — urwid's clipped
+    text renderer can leave the cell after an empty markup chunk holding
+    stale content from prior frames.
     """
     if width <= 0:
-        return [('faded', '')]
+        return []
     if total <= 0:
         return [('faded', '░' * width)]
     pct = used / total
@@ -54,7 +56,12 @@ def _bar_markup(used, total, width):
         attr = 'info'
     else:
         attr = 'success'
-    return [(attr, '█' * filled), ('faded', '░' * (width - filled))]
+    parts = []
+    if filled:
+        parts.append((attr, '█' * filled))
+    if width - filled:
+        parts.append(('faded', '░' * (width - filled)))
+    return parts
 
 
 def _tres_int(job, key):
@@ -400,9 +407,12 @@ class ScreenViewDashboard(u.WidgetWrap):
         self.jobs = jobs
         self.cluster_fetcher = cluster_fetcher
 
-        # Plain placeholder over a top-aligned Filler — the dashboard isn't a
+        # Plain placeholder over a top-anchored Pile — the dashboard isn't a
         # scrollable list, so a ListBox would only add focus/scroll state that
         # gets reset on every refresh (jumping the viewport to the bottom).
+        # The Pile ends with a weighted SolidFill that explicitly repaints the
+        # area below the content; without it, stale cells from a prior render
+        # (e.g. the pre-data startup layout) bleed through.
         self.placeholder = u.WidgetPlaceholder(u.SolidFill(' '))
         u.connect_signal(self.jobs, 'jobs_updated', self.on_jobs_update)
 
@@ -453,5 +463,12 @@ class ScreenViewDashboard(u.WidgetWrap):
         # Stack: pulse (full) → mid (you | queue) → activity ticker.
         mid = u.Columns([('weight', 50, you), ('weight', 50, queue)], dividechars=2)
 
-        pile = u.Pile([pulse, u.Divider(), mid, u.Divider(), activity])
-        self.placeholder.original_widget = u.Filler(pile, valign='top')
+        pile = u.Pile([
+            ('pack', pulse),
+            ('pack', u.Divider()),
+            ('pack', mid),
+            ('pack', u.Divider()),
+            ('pack', activity),
+            ('weight', 1, u.SolidFill(' ')),
+        ])
+        self.placeholder.original_widget = pile
