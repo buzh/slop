@@ -196,7 +196,7 @@ def _labeled(label, markup, gutter=18):
 # ----- YOU and LIVE QUEUE -------------------------------------------------
 
 
-def _you_section(user, jobs, now, free_cpu, free_gpu_types):
+def _you_section(user, jobs, now, free_cpu, free_gpus, free_gpu_types):
     """Adaptive YOU panel — running/pending detail or idle exploration prompts."""
     rows = []
     mine = [j for j in jobs if getattr(j, 'user_name', None) == user]
@@ -275,12 +275,15 @@ def _you_section(user, jobs, now, free_cpu, free_gpu_types):
         rows.append(_labeled('', [('faded', 'You have no jobs running or pending right now.')]))
         rows.append(u.Text(""))
         gpu_avail = ', '.join(free_gpu_types) or 'none'
+        gpu_word = 'GPU' if free_gpus == 1 else 'GPUs'
         rows.append(_labeled(
             'Available now',
             [('success', f"{free_cpu} free CPUs"),
              ('normal', ' · '),
-             ('success', f"{len(free_gpu_types)} GPU types"),
-             ('normal', ' have capacity')],
+             ('success', f"{free_gpus} free {gpu_word}"),
+             ('normal',
+              f" across {len(free_gpu_types)} type"
+              f"{'s' if len(free_gpu_types) != 1 else ''}")],
         ))
         rows.append(_labeled('', [('faded', f"({gpu_avail})")]))
         rows.append(u.Text(""))
@@ -462,6 +465,7 @@ class ScreenViewDashboard(u.WidgetWrap):
         gpu_stats = cluster.get_gpu_stats()
 
         free_cpu = stats['cpus_total'] - stats['cpus_alloc']
+        free_gpus = sum(max(0, s['total'] - s['used']) for s in gpu_stats.values())
         free_gpu_types = sorted(
             [t for t, s in gpu_stats.items() if s['used'] < s['total']],
             key=lambda t: -(gpu_stats[t]['total'] - gpu_stats[t]['used']),
@@ -470,7 +474,7 @@ class ScreenViewDashboard(u.WidgetWrap):
         user = getattr(self.main_screen, 'current_username', 'unknown')
 
         pulse = _pulse_section(stats, gpu_stats, width)
-        you = _you_section(user, self.jobs.jobs, now, free_cpu, free_gpu_types)
+        you = _you_section(user, self.jobs.jobs, now, free_cpu, free_gpus, free_gpu_types)
         queue = _queue_section(self.jobs.jobs, now)
         activity = _activity_line(self.jobs.jobs, now)
 
