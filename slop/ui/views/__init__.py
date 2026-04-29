@@ -44,9 +44,16 @@ ScreenViewStates = make_view(
 )
 
 
+# Imported after the make_view() factories so `jobs.py` can pick them up.
+from slop.ui.views.dashboard import ScreenViewDashboard  # noqa: E402
+from slop.ui.views.jobs import ScreenViewJobs  # noqa: E402
+
+
 __all__ = [
     "TwoColumnJobView",
     "make_view",
+    "ScreenViewDashboard",
+    "ScreenViewJobs",
     "ScreenViewMyJobs",
     "ScreenViewUsers",
     "ScreenViewAccounts",

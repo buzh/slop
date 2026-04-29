@@ -337,23 +337,25 @@ class Footer(u.WidgetWrap):
         footer = u.AttrMap(self.text, 'footer')
         u.WidgetWrap.__init__(self, footer)
 
-    def update(self, view_type=None, f1_label=None):
+    def update(self, view_type=None):
         """Update footer with context-appropriate shortcuts.
 
         Args:
-            view_type: Current view type ('myjobs', 'users', 'cluster', etc.)
-            f1_label: Label for F1 key (deprecated, kept for compatibility)
+            view_type: Current view type ('dashboard', 'users', 'cluster', etc.)
         """
-        # Get screen width for responsive content
         screen_width = getattr(self.main_screen, 'width', 120)
 
-        # Build shortcuts based on screen width
         if screen_width < 90:
-            text = "F1-8:Views ?:Help q:Quit"
+            text = "F1/2/3 5-8:Views ?:Help q:Quit"
         elif screen_width < 140:
-            text = "F1-F8: Views | ?: Help | q: Quit"
+            text = "F1: Dashboard | F2: Jobs | F3: My Jobs | F5-8: Cluster/History/Queue/Sched | ?: Help | q: Quit"
         else:
-            text = "F1: Jobs/Users | F2: Accounts | F3: Partitions | F4: States | F5: Cluster | F6: History | F7: Queue | F8: Scheduler | ?: Help | q: Quit"
+            text = ("F1: Dashboard | F2: Jobs (user/acct/partition/state) | F3: My Jobs | "
+                    "F5: Cluster | F6: History | F7: Queue | F8: Scheduler | ?: Help | q: Quit")
+
+        # Append a sub-line hint for the F2 cycling tabs.
+        if view_type in ('users', 'accounts', 'partitions', 'states') and screen_width >= 100:
+            text += "    [Tab/⇧Tab or 1-4: cycle tabs]"
 
         self.text.set_text(text)
 

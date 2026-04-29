@@ -82,7 +82,7 @@ class Slop(u.WidgetWrap):
         # Views (must come after fetchers and `self.height` are set)
         self.current_username = os.getenv('USER') or os.getenv('USERNAME') or 'unknown'
         self.views = ViewManager(self)
-        self.body = u.AttrMap(self.views.users, 'bg')
+        self.body = u.AttrMap(self.views.dashboard, 'bg')
         self.frame = u.Frame(header=self.header, body=self.body, footer=self.footer)
 
         # Handle window resize (if supported by the event loop)
@@ -93,38 +93,24 @@ class Slop(u.WidgetWrap):
 
         super().__init__(self.frame)
 
-        # Show initial screen: My Jobs if user has jobs, otherwise All Users
-        if self.views.my_jobs.has_jobs():
-            self.show_screen_my_jobs()
-        else:
-            self.show_screen_users()
-
+        self.show_screen_dashboard()
         self.show_splash_screen()
 
     # --- Compatibility shims --------------------------------------------------
-    # External callers (e.g., overlays, sub-views) refer to `current_view`,
-    # `last_f1_view`, and the `show_screen_*` methods. Forward them to ViewManager.
+    # External callers (e.g., overlays, sub-views) refer to `current_view` and
+    # the `show_screen_*` methods. Forward them to ViewManager.
 
     @property
     def current_view(self):
         return self.views.current
 
-    @property
-    def last_f1_view(self):
-        return self.views.last_f1_view
-
+    def show_screen_dashboard(self): return self.views.show_dashboard()
+    def show_screen_jobs(self):     return self.views.show_jobs()
     def show_screen_my_jobs(self):  return self.views.show_my_jobs()
-    def show_screen_users(self):    return self.views.show_users()
-    def show_screen_accounts(self): return self.views.show_accounts()
-    def show_screen_partitions(self): return self.views.show_partitions()
-    def show_screen_states(self):   return self.views.show_states()
     def show_screen_cluster(self):  return self.views.show_cluster()
     def show_screen_queue(self):    return self.views.show_queue()
     def show_screen_scheduler(self): return self.views.show_scheduler()
     def show_screen_report(self):   return self.views.show_report()
-
-    def get_f1_label(self):
-        return self.views.f1_label()
 
     # --- Refresh / resize ----------------------------------------------------
 
@@ -167,10 +153,12 @@ class Slop(u.WidgetWrap):
         for screen in self.views.all_resizable():
             screen.on_resize()
 
-        footer_types = ['myjobs', 'users', 'accounts', 'partitions', 'states',
-                        'cluster', 'history', 'queue', 'scheduler']
+        # JOBS (index 1) reports its own footer key based on the active sub-tab;
+        # everything else maps directly by view ID.
+        footer_types = ['dashboard', None, 'myjobs', 'cluster', 'history', 'queue', 'scheduler']
         if 0 <= self.views.current < len(footer_types):
-            self.footer.update(footer_types[self.views.current], f1_label=self.get_f1_label())
+            ft = footer_types[self.views.current] or self.views.jobs_view.view_type
+            self.footer.update(ft)
 
         self.loop.draw_screen()
 
@@ -220,10 +208,6 @@ class Slop(u.WidgetWrap):
             search_type: 'user', 'account', 'job', or 'node'
             search_value: Username, account name, job ID, or node name
         """
-        # Save previous F1 view (for Esc to return to)
-        if self.views.current in (0, 1):
-            self.views.last_f1_view = self.views.current
-
         if search_type in ('user', 'account'):
             report = ScreenViewReport(self, search_type, search_value, result_data, self.adaptive_sacct)
             self.views.install_report(report, search_type, search_value)
@@ -291,14 +275,10 @@ class Slop(u.WidgetWrap):
             self.open_overlay(self.confirmexit, height=3)
             return
 
-        if key == 'f1':
-            self.views.handle_f1()
-            return
-
         view_map = {
-            'f2': self.show_screen_accounts,
-            'f3': self.show_screen_partitions,
-            'f4': self.show_screen_states,
+            'f1': self.show_screen_dashboard,
+            'f2': self.show_screen_jobs,
+            'f3': self.show_screen_my_jobs,
             'f5': self.show_screen_cluster,
             'f6': self.show_screen_report,
             'f7': self.show_screen_queue,

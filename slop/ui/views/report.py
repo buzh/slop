@@ -337,10 +337,7 @@ class ScreenViewReport(TabCompletionMixin, u.WidgetWrap):
                 self._reset_completion()
 
         if key == 'esc':
-            if self.main_screen.last_f1_view == 0:
-                self.main_screen.show_screen_my_jobs()
-            else:
-                self.main_screen.show_screen_users()
+            self.main_screen.show_screen_dashboard()
             return None
 
         if key == '?':
