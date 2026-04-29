@@ -73,6 +73,46 @@ ENDED_STATS_WINDOW = 60 * 60
 
 # ----- Lifecycle helpers --------------------------------------------------
 
+def _tres_int(job, key):
+    """Return the integer count for a TRES `key` on `job`, or 0 if absent.
+
+    Used by the §2↔§3 gap footer to aggregate cpus/nodes across the
+    steady-state running pool. We parse the raw alloc/req string rather
+    than reusing `compact_tres` because we want raw integer counts, not
+    the human-formatted compact rendering.
+    """
+    s = getattr(job, 'tres_alloc_str', '') or getattr(job, 'tres_req_str', '')
+    if not s:
+        return 0
+    for entry in s.split(','):
+        if '=' not in entry:
+            continue
+        k, v = entry.split('=', 1)
+        if k == key:
+            try:
+                return int(v)
+            except ValueError:
+                return 0
+    return 0
+
+
+def _format_count(n):
+    """Compact integer rendering: 999 → '999', 1234 → '1.2k', 12345 → '12k'."""
+    if n < 1000:
+        return str(n)
+    if n < 10000:
+        return f"{n / 1000:.1f}k"
+    return f"{n // 1000}k"
+
+
+def _gap_footer(text):
+    """Faded one-line summary that sits at the bottom of a section to
+    describe jobs which logically belong "between" this section and the
+    one below it but don't qualify for any visible row. The leading
+    ellipsis hints at continuation from the rows above."""
+    return u.Text(("faded", f"  …{text}"))
+
+
 def _is_just_started(job, now):
     """RUNNING/COMPLETING and started within the last STARTED_MAX_AGE seconds.
 
@@ -566,21 +606,55 @@ class ScreenViewQueue(u.WidgetWrap):
     def _render(self):
         width = self._width()
         ended_cap, finish_cap, started_cap, about_cap = self._section_capacities()
+        now = time.time()
+
+        # Plan candidate sets for §2/§3/§4 up-front so the gap-summary
+        # footers know exactly which jobs each adjacent section will show
+        # — the footer for a gap describes jobs that exist in the lifecycle
+        # but fall outside every visible window, so it needs the union of
+        # visible jobids across both sections it sits between.
+        finishing_cands = self._finishing_candidates(now)
+        finishing_visible = ({j.job_id for _, j in finishing_cands[:finish_cap]}
+                             if finish_cap else set())
+
+        started_cands = self._started_candidates(now, skip=finishing_visible)
+        # `_started_candidates` returns oldest-first; we keep the newest
+        # `cap` entries so the slice below gives us the visible block.
+        started_visible_pairs = (started_cands[-started_cap:]
+                                 if started_cap else [])
+        started_visible = {j.job_id for _, j in started_visible_pairs}
+
+        about_plan = self._about_plan(now)
+
+        steady_footer = self._steady_state_footer(
+            now, finishing_visible, started_visible)
+        pending_footer = self._pending_depth_footer(about_plan, about_cap)
 
         self._render_ended_section(width, ended_cap)
-        self._render_finishing_section(width, finish_cap)
-        self._render_started_section(width, started_cap)
-        self._render_about_section(width, about_cap)
+        self._render_finishing_section(
+            width, finishing_cands, finish_cap, footer=steady_footer)
+        self._render_started_section(
+            width, started_cands, started_cap, footer=pending_footer)
+        self._render_about_section(width, about_plan, about_cap)
         self._restore_focus()
 
-    def _set_section_contents(self, section_pile, top_widgets, row_widgets):
+    def _set_section_contents(self, section_pile, top_widgets, row_widgets,
+                              footer=None):
         """Pack `top_widgets` (title + col header + any info text) at the
         top, then pin `row_widgets` (job rows) to the bottom via a weight
         spacer in between. Conveyor-belt flow: newest entries appear at
-        the very bottom of the section and drift up as more accumulate."""
+        the very bottom of the section and drift up as more accumulate.
+
+        Optional `footer` is appended below the rows — used for the gap
+        summary line that describes jobs not visible in this section but
+        logically present in the lifecycle. The footer steals the bottom
+        line from the row block, which is desirable: it visually anchors
+        the gap summary to the section boundary it explains."""
         contents = [(w, ('pack', None)) for w in top_widgets]
         contents.append((u.SolidFill(' '), ('weight', 1)))
         contents.extend((w, ('pack', None)) for w in row_widgets)
+        if footer is not None:
+            contents.append((footer, ('pack', None)))
         section_pile.contents = contents
 
     def _ended_stats_text(self):
@@ -652,14 +726,16 @@ class ScreenViewQueue(u.WidgetWrap):
             rows = [EndedJobWidget(snap) for snap, _ts_seen in items]
         self._set_section_contents(self.ended_section, top, rows)
 
-    def _render_finishing_section(self, width, cap):
-        now = time.time()
+    def _finishing_candidates(self, now):
+        """RUNNING/COMPLETING jobs ordered for the §2 (Finishing next) section.
+
+        Sorted ascending by remaining seconds; COMPLETING jobs use a
+        sentinel of -1 so they sort to the very top (closest to vanishing
+        into Recently finished). Excludes anything already in
+        `ended_tracker` — that job was both COMPLETING and terminal in
+        the same tick and Recently finished has already captured it."""
         candidates = []
         for j in self.jobs.jobs:
-            # Already surfaced in Recently Finished — don't show twice.
-            # A job can be both COMPLETING and CANCELLED in the same state
-            # list (cancellation kicked in mid-cleanup); the ended tracker
-            # has captured it, so skip it here.
             if j.job_id in self.ended_tracker:
                 continue
             states = getattr(j, 'job_state', None) or []
@@ -668,8 +744,6 @@ class ScreenViewQueue(u.WidgetWrap):
             if not (is_running or is_completing):
                 continue
             if is_completing:
-                # Epilog/cleanup — sort to the very top of the section since
-                # they're the closest to vanishing into "Recently finished".
                 candidates.append((-1, j))
                 continue
             end_ts = ts(getattr(j, 'end_time', {}))
@@ -680,77 +754,39 @@ class ScreenViewQueue(u.WidgetWrap):
                 continue
             candidates.append((remaining, j))
         candidates.sort(key=lambda x: x[0])
+        return candidates
 
-        # No count in the title: this section is always "the next N jobs to
-        # finish" where N is whatever fits in the window — the total number
-        # of running jobs would just be misleading.
-        title = SectionBanner("Finishing next", width=width)
-        col_header = u.AttrMap(_header(FINISHING_LAYOUT), 'faded')
-        top = [title, col_header]
-        visible = candidates[:cap] if cap else []
-        if not candidates:
-            top.append(u.Text(("faded", "  (no running jobs with a known end time)")))
-            rows = []
-        else:
-            rows = [FinishingJobWidget(job) for _, job in visible]
-        # Stash the rendered set so `_render_started_section` can skip
-        # anything that's already on screen in this section (avoids the
-        # same short job showing in both "Recently started" and
-        # "Finishing next" at the same time).
-        self._finishing_visible_jobids = {job.job_id for _, job in visible}
-        self._set_section_contents(self.finishing_section, top, rows)
+    def _started_candidates(self, now, skip):
+        """Jobs that recently entered RUNNING for the §3 section.
 
-    def _render_started_section(self, width, cap):
-        now = time.time()
-        # Skip anything that's currently visible in "Finishing next" —
-        # otherwise a short, freshly-started job would appear in both
-        # sections at once. Recently started may end up under-filled as
-        # a result; that's preferable to duplicate rows.
-        skip = getattr(self, '_finishing_visible_jobids', set())
+        `skip` is the set of jobids already visible in §2 (Finishing next)
+        — short jobs that qualify for both sections are kept in §2 only,
+        even at the cost of an under-filled §3, because a duplicate row
+        is the more confusing failure mode."""
         candidates = []
         for j in self.jobs.jobs:
             if j.job_id in skip:
                 continue
-            # Same dedup as in Finishing Next: a job already shown in
-            # Recently Finished shouldn't reappear in this section.
             if j.job_id in self.ended_tracker:
                 continue
             if not _is_just_started(j, now):
                 continue
             start_ts = ts(getattr(j, 'start_time', {}))
             candidates.append((start_ts, j))
-        # Sort oldest-first so the slice below keeps the newest. After
-        # slicing, the visible block stays oldest-at-top / newest-at-bottom,
-        # matching the upward "flow" of the view: a freshly-started job
-        # appears at the bottom and drifts up as more jobs start behind it.
+        # Sort oldest-first so the caller's `[-cap:]` slice keeps the
+        # newest. After slicing, the visible block stays oldest-at-top /
+        # newest-at-bottom, matching the upward conveyor-belt flow.
         candidates.sort(key=lambda x: x[0])
-        if cap:
-            candidates = candidates[-cap:]  # keep newest, drop oldest off the top
+        return candidates
 
-        # No count in the title: this section is always "the most recently
-        # started N jobs" where N is whatever fits in the window.
-        title = SectionBanner("Recently started", width=width)
-        col_header = u.AttrMap(_header(STARTED_LAYOUT), 'faded')
-        top = [title, col_header]
-        if not candidates:
-            top.append(u.Text(
-                ("faded", "  (no jobs have started in the last 15 minutes)")))
-            rows = []
-        else:
-            rows = [StartedJobWidget(job) for _, job in candidates]
-        self._set_section_contents(self.started_section, top, rows)
+    def _about_plan(self, now):
+        """Group pending jobs by ETA-known/unknown plus headline stats.
 
-    def _render_about_section(self, width, cap):
-        """Top of the cluster-wide pending list, sorted by ETA (soonest first).
-
-        Just a preview — the full interactive pending list lives in F8.
-        """
-        now_wall = time.time()
+        Returns a dict with the ordered visible-eligible list, the no-ETA
+        list, total count, and the requested-time / current-wait samples
+        used by the §4 banner header."""
         pending_with_eta = []
         pending_without = []
-        # Collect headline stats in the same pass over the pending list:
-        # requested time limit (what the user asked for) and current wait
-        # (how long the job has been sitting in PENDING so far).
         time_limits = []
         waits = []
         for job in self.jobs.jobs:
@@ -766,10 +802,121 @@ class ScreenViewQueue(u.WidgetWrap):
                 time_limits.append(tl.get('number', 0) * 60)
             submit_ts = ts(getattr(job, 'submit_time', {}))
             if submit_ts > 0:
-                waits.append(max(0, now_wall - submit_ts))
+                waits.append(max(0, now - submit_ts))
         pending_with_eta.sort(key=lambda x: x[0])
+        ordered = [j for _, j in pending_with_eta] + pending_without
+        return {
+            'ordered': ordered,
+            'no_eta_count': len(pending_without),
+            'time_limits': time_limits,
+            'waits': waits,
+            'total': len(ordered),
+        }
 
-        total_pending = len(pending_with_eta) + len(pending_without)
+    def _steady_state_footer(self, now, finishing_visible, started_visible):
+        """Footer for the §2↔§3 gap: the steady-state running pool.
+
+        These are RUNNING jobs that don't qualify for either visible
+        section — neither close enough to ending to land in §2 nor fresh
+        enough to land in §3. By far the largest invisible bucket on a
+        busy cluster, so summarizing aggregate footprint (cpus, nodes)
+        and median runtime gives the operator a sense of "what's going on
+        in the middle" without scrolling through hundreds of rows."""
+        excluded = finishing_visible | started_visible | set(self.ended_tracker.keys())
+        count = 0
+        cpus = 0
+        nodes = 0
+        runtimes = []
+        for j in self.jobs.jobs:
+            if j.job_id in excluded:
+                continue
+            states = getattr(j, 'job_state', None) or []
+            # COMPLETING is excluded deliberately: those jobs are
+            # transitioning, not steady-state, and they're pinned to the
+            # top of §2 so they're already accounted for.
+            if 'RUNNING' not in states:
+                continue
+            count += 1
+            cpus += _tres_int(j, 'cpu')
+            nodes += _tres_int(j, 'node')
+            start_ts = ts(getattr(j, 'start_time', {}))
+            if start_ts and now >= start_ts:
+                runtimes.append(now - start_ts)
+        if count == 0:
+            return None
+        parts = [f"{count} more running steady-state"]
+        if cpus:
+            parts.append(f"{_format_count(cpus)} cpus")
+        if nodes:
+            parts.append(f"{nodes} nodes")
+        if runtimes:
+            runtimes.sort()
+            median = runtimes[len(runtimes) // 2]
+            parts.append(f"median ran {coarse_duration(int(median))}")
+        return _gap_footer(" · ".join(parts))
+
+    def _pending_depth_footer(self, about_plan, about_cap):
+        """Footer for the §3↔§4 gap: pending jobs not visible in §4.
+
+        §4 shows only the soonest-to-start `about_cap` rows; everything
+        further down the queue (and every no-ETA job past the visible
+        slice) sits "below the horizon" of the section. The total pending
+        count is already in the §4 banner — this footer is specifically
+        about the *invisible* tail."""
+        total = about_plan['total']
+        visible = min(total, about_cap) if about_cap else 0
+        hidden = total - visible
+        if hidden <= 0:
+            return None
+        # No-ETA jobs sit at the tail of `ordered`, so the visible slice
+        # only consumes them once it has exhausted every ETA-known row.
+        no_eta = about_plan['no_eta_count']
+        with_eta = total - no_eta
+        no_eta_visible = max(0, visible - with_eta)
+        no_eta_hidden = no_eta - no_eta_visible
+        parts = [f"{hidden} more pending in the queue"]
+        if no_eta_hidden:
+            parts.append(f"{no_eta_hidden} without start estimate")
+        return _gap_footer(" · ".join(parts))
+
+    def _render_finishing_section(self, width, candidates, cap, footer=None):
+        # No count in the title: this section is always "the next N jobs to
+        # finish" where N is whatever fits in the window — the total number
+        # of running jobs would just be misleading.
+        title = SectionBanner("Finishing next", width=width)
+        col_header = u.AttrMap(_header(FINISHING_LAYOUT), 'faded')
+        top = [title, col_header]
+        visible = candidates[:cap] if cap else []
+        if not candidates:
+            top.append(u.Text(("faded", "  (no running jobs with a known end time)")))
+            rows = []
+        else:
+            rows = [FinishingJobWidget(job) for _, job in visible]
+        self._set_section_contents(self.finishing_section, top, rows, footer=footer)
+
+    def _render_started_section(self, width, candidates, cap, footer=None):
+        visible = candidates[-cap:] if cap else []
+        # No count in the title: this section is always "the most recently
+        # started N jobs" where N is whatever fits in the window.
+        title = SectionBanner("Recently started", width=width)
+        col_header = u.AttrMap(_header(STARTED_LAYOUT), 'faded')
+        top = [title, col_header]
+        if not candidates:
+            top.append(u.Text(
+                ("faded", "  (no jobs have started in the last 15 minutes)")))
+            rows = []
+        else:
+            rows = [StartedJobWidget(job) for _, job in visible]
+        self._set_section_contents(self.started_section, top, rows, footer=footer)
+
+    def _render_about_section(self, width, about_plan, cap):
+        """Top of the cluster-wide pending list, sorted by ETA (soonest first).
+
+        Just a preview — the full interactive pending list lives in F8.
+        """
+        total_pending = about_plan['total']
+        time_limits = about_plan['time_limits']
+        waits = about_plan['waits']
         # Title carries the queue depth — unlike the upper sections, the
         # total count of pending jobs is genuine information (not just the
         # number of rows that fit). Append avg requested runtime and avg
@@ -784,12 +931,11 @@ class ScreenViewQueue(u.WidgetWrap):
         col_header = u.AttrMap(_header(ABOUT_LAYOUT), 'faded')
         top = [title, col_header]
 
-        if not pending_with_eta and not pending_without:
+        ordered = about_plan['ordered']
+        if not ordered:
             top.append(u.Text(("faded", "  (no pending jobs in the queue)")))
             rows = []
         else:
-            # ETA-known first (sorted by soonest), then unknowns at the end.
-            ordered = [j for _, j in pending_with_eta] + pending_without
             rows = [AboutToStartJobWidget(job)
                     for job in (ordered[:cap] if cap else [])]
         self._set_section_contents(self.about_section, top, rows)
