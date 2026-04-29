@@ -286,7 +286,7 @@ def _you_section(user, jobs, now, free_cpu, free_gpus, free_gpu_types):
         # the right side of an 18-col indent.
         gpu_avail = ', '.join(free_gpu_types) or 'none'
         gpu_word = 'GPU' if free_gpus == 1 else 'GPUs'
-        rows.append(row('Available now', [], gutter=0))
+        rows.append(row('Available now:', [], gutter=0))
         rows.append(row('', [
             ('success', f"{free_cpu} free CPUs"),
             ('normal', ' · '),
@@ -298,7 +298,7 @@ def _you_section(user, jobs, now, free_cpu, free_gpus, free_gpu_types):
         rows.append(row('', [('faded', f"({gpu_avail})")], gutter=0))
         rows.append(u.Text(""))
 
-        rows.append(row('Try', [], gutter=0))
+        rows.append(row('Try:', [], gutter=0))
         rows.append(row('', [('info', '/'),
                              ('normal', '  look up any user, account, or job id')], gutter=0))
         rows.append(row('', [('info', 'F2'),
