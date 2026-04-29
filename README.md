@@ -5,6 +5,10 @@ https://github.com/user-attachments/assets/e1522f06-295f-4b20-b5cd-76cb24a0c9f1
 # slop
 A `top`-like utility for the Slurm HPC batch job scheduler
 
+# April 29th, 2026: v1.1.7 is released!
+
+Numerous minor bug fixes, as well as a code overhaul that should improve TUI performance by handing off more of the legwork to Urwid itself.
+
 # April 21st, 2026: v1.1.6 is released!
 
 This version introduces a brand new "job flow" screen which gives a live view of how jobs are starting and ending.
