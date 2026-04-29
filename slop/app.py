@@ -55,6 +55,7 @@ class Slop(u.WidgetWrap):
         # State tracking
         self.overlay_showing = False
         self.overlay_stack = []  # Stack of previous bodies for nested overlays
+        self._splash_body = None  # frame.body assigned for the splash overlay
 
         col_rows = u.raw_display.Screen().get_cols_rows()
         self.width = col_rows[0]
@@ -157,6 +158,20 @@ class Slop(u.WidgetWrap):
 
     # --- Overlays / search ---------------------------------------------------
 
+    def schedule_main(self, fn, *args):
+        """Schedule fn(*args) on the main event loop from a worker thread.
+
+        Use this instead of `loop.set_alarm_in(0, ...)` from off-thread code:
+        urwid's alarm heap and asyncio's `call_later` are not thread-safe.
+        Triggers a redraw after the callback so widget updates show up
+        immediately (urwid does that automatically for alarm-driven callbacks
+        but not for ones scheduled directly via call_soon_threadsafe).
+        """
+        def run():
+            fn(*args)
+            self.loop.draw_screen()
+        self.asyncloop._loop.call_soon_threadsafe(run)
+
     def show_app_info(self):
         """Display application information and keyboard shortcuts overlay."""
         help_text = build_help_text(self.views.current)
@@ -211,12 +226,31 @@ class Slop(u.WidgetWrap):
         """Display splash screen while initial data loads."""
         overlay = GenericOverlayText(self, "Welcome to slop\nPlease wait while fetching job data")
         self.open_overlay(overlay)
+        self._splash_body = self.frame.body
 
         def on_job_update(*_args):
-            self.close_overlay()
+            self._dismiss_splash()
             u.disconnect_signal(self.jobs, 'jobs_updated', on_job_update)
 
         u.connect_signal(self.jobs, 'jobs_updated', on_job_update)
+
+    def _dismiss_splash(self):
+        """Remove the splash overlay wherever it sits in the overlay stack.
+
+        The user may have opened other overlays on top of (or dismissed) the
+        splash before initial data arrives. Don't blindly pop the top.
+        """
+        body = self._splash_body
+        self._splash_body = None
+        if body is None:
+            return
+        if self.frame.body is body:
+            self.close_overlay()
+        else:
+            try:
+                self.overlay_stack.remove(body)
+            except ValueError:
+                pass
 
     # --- Input ---------------------------------------------------------------
 

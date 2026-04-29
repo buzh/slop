@@ -1,8 +1,8 @@
 """Cluster resources view."""
 import urwid as u
 from slop.models import ClusterResources
-from slop.utils import smart_truncate
-from slop.ui.widgets import SectionHeader, rounded_box
+from slop.utils import compress_hostlist, smart_truncate
+from slop.ui.widgets import SafeListBox, SectionHeader, rounded_box
 
 
 class ScreenViewCluster(u.WidgetWrap):
@@ -12,7 +12,10 @@ class ScreenViewCluster(u.WidgetWrap):
         self.main_screen = main_screen
         self.cluster_fetcher = cluster_fetcher
         self.walker = u.SimpleFocusListWalker([])
-        self.listbox = u.ListBox(self.walker)
+        self.listbox = SafeListBox(self.walker)
+        # `e` toggles between Slurm-style ranges (default — fits a 1000-node
+        # cluster on one line per state) and the full comma-separated list.
+        self.expanded_hostlist = False
 
         widget = rounded_box(u.ScrollBar(self.listbox), title='Cluster Resources')
         u.WidgetWrap.__init__(self, widget)
@@ -26,6 +29,15 @@ class ScreenViewCluster(u.WidgetWrap):
     def on_resize(self):
         """Handle resize events."""
         self.update()
+
+    def keypress(self, size, key):
+        if self.main_screen.overlay_showing:
+            return key
+        if key == 'e':
+            self.expanded_hostlist = not self.expanded_hostlist
+            self.update()
+            return None
+        return super().keypress(size, key)
 
     def make_bar(self, used, total, width=40):
         """Create a visual progress bar."""
@@ -162,6 +174,8 @@ class ScreenViewCluster(u.WidgetWrap):
         # === All nodes summary ===
         widgets.append(u.Divider())
         widgets.append(SectionHeader('ALL NODES BY STATE'))
+        hint = "e to compress" if self.expanded_hostlist else "e to expand"
+        widgets.append(u.Text(('faded', hint)))
 
         # Group nodes by state with better formatting
         nodes_by_state = cluster.get_nodes_by_state()
@@ -196,44 +210,22 @@ class ScreenViewCluster(u.WidgetWrap):
             else:
                 state_attr = None
 
-            # Format node list - wrap at screen width
-            node_names = sorted([n.name for n in node_list])
+            # Default: Slurm-style ranges so a 900-node ALLOCATED block
+            # fits on one line. `e` swaps in the full comma-separated list.
+            node_names = sorted(n.name for n in node_list)
+            if self.expanded_hostlist:
+                body = ", ".join(node_names)
+                wrap = 'space'
+            else:
+                body = compress_hostlist(node_names)
+                wrap = 'any'
 
-            # Build wrapped lines
-            max_line_width = available_width - 25  # Account for state label
-            current_line = []
-            current_width = 0
-            lines = []
-
-            for node_name in node_names:
-                node_width = len(node_name) + 2  # +2 for ", "
-                if current_width + node_width > max_line_width and current_line:
-                    lines.append(", ".join(current_line))
-                    current_line = [node_name]
-                    current_width = len(node_name)
-                else:
-                    current_line.append(node_name)
-                    current_width += node_width
-
-            if current_line:
-                lines.append(", ".join(current_line))
-
-            # Display state and first line
             state_label = f"{state:12s} {count_str}"
-            if lines:
-                first_line = f"{state_label}: {lines[0]}"
-                if state_attr:
-                    widgets.append(u.AttrMap(u.Text(first_line), state_attr))
-                else:
-                    widgets.append(u.Text(first_line))
-
-                # Additional lines indented
-                for line in lines[1:]:
-                    indent = " " * (len(state_label) + 2)
-                    if state_attr:
-                        widgets.append(u.AttrMap(u.Text(f"{indent}{line}"), state_attr))
-                    else:
-                        widgets.append(u.Text(f"{indent}{line}"))
+            line = u.Text(f"{state_label}: {body}", wrap=wrap)
+            if state_attr:
+                widgets.append(u.AttrMap(line, state_attr))
+            else:
+                widgets.append(line)
 
         # Update walker
         self.walker.clear()

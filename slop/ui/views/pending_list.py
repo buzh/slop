@@ -12,7 +12,7 @@ focus state across rebuilds, and intercepts e/Enter/Space when focused.
 
 import urwid as u
 from slop.ui.constants import EMPTY_PLACEHOLDER
-from slop.ui.widgets import SectionBanner
+from slop.ui.widgets import SafeListBox, SectionBanner
 from slop.ui.views.queue_helpers import (
     coarse_duration,
     job_priority,
@@ -199,7 +199,7 @@ class PendingListWidget(u.WidgetWrap):
         self.summary_text = u.Text("")
         self.col_header_text = u.AttrMap(u.Text(""), 'jobheader')
         self.job_walker = u.SimpleFocusListWalker([])
-        self.job_listbox = u.ListBox(self.job_walker)
+        self.job_listbox = SafeListBox(self.job_walker)
 
         pile = u.Pile([
             ('pack', self.summary_text),

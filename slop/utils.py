@@ -3,6 +3,51 @@ import time
 import datetime
 
 
+def compress_hostlist(names):
+    """Compress hostnames to Slurm-style hostlist syntax.
+
+    Splits each name at its trailing-digit suffix and groups by the alpha
+    prefix; numeric suffixes within a group are run-length encoded.
+
+        ['b1101','b1102','b1104','login-1','login-2','robinhood']
+        -> 'b[1101-1102,1104],login-[1-2],robinhood'
+
+    A single occurrence of a prefix renders without brackets ('b1101'),
+    multiple occurrences always do ('b[1101]' would be silly even for n=1
+    if it ever showed up). Names with no numeric suffix pass through.
+    Width/zero-padding is not preserved — modern Slurm clusters usually
+    don't use it, and the surrounding view treats this as a display string
+    rather than something to round-trip back into Slurm.
+    """
+    if not names:
+        return ""
+
+    pat = re.compile(r'^(.*?)(\d+)$')
+    grouped = {}     # prefix -> [int, ...]
+    standalone = []  # names with no trailing digits
+    order = []       # prefixes in first-seen order
+    for name in names:
+        m = pat.match(name)
+        if m:
+            prefix, num = m.group(1), int(m.group(2))
+            if prefix not in grouped:
+                grouped[prefix] = []
+                order.append(prefix)
+            grouped[prefix].append(num)
+        else:
+            standalone.append(name)
+
+    parts = []
+    for prefix in order:
+        nums = grouped[prefix]
+        if len(nums) == 1:
+            parts.append(f"{prefix}{nums[0]}")
+        else:
+            parts.append(f"{prefix}[{compress_int_range(nums)}]")
+    parts.extend(standalone)
+    return ",".join(parts)
+
+
 def compress_int_range(numbers):
     if not numbers:
         return ""

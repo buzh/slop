@@ -19,6 +19,7 @@ from slop.ui.widgets import (
     ChildJobWidget,
     ArrayPendWidget,
     ExpandableGroupMarker,
+    SafeListBox,
     SectionHeader,
     UserItem,
     GenericOverlayText,
@@ -73,10 +74,10 @@ class TwoColumnJobView(u.WidgetWrap):
         # Create walkers
         self.entity_walker = u.SimpleFocusListWalker([])
         self.jobwalker = u.SimpleFocusListWalker([])
-        self.joblistbox = u.ListBox(self.jobwalker)
+        self.joblistbox = SafeListBox(self.jobwalker)
 
         # Build UI
-        entity_list = u.AttrMap(u.ScrollBar(u.ListBox(self.entity_walker)), 'bg')
+        entity_list = u.AttrMap(u.ScrollBar(SafeListBox(self.entity_walker)), 'bg')
 
         # Right panel: just the scrollable job list (category headers are inline)
         self.jw = rounded_box(u.ScrollBar(self.joblistbox),

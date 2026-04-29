@@ -1,9 +1,12 @@
 """Comprehensive user/account report view combining sreport and sacct data."""
 
+import subprocess
+import threading
+
 import urwid as u
 from slop.ui.overlays import JobInfoOverlay
 from slop.ui.tab_completion import TabCompletionMixin
-from slop.ui.widgets import AccountUsageWidget, rounded_box
+from slop.ui.widgets import AccountUsageWidget, SafeListBox, rounded_box
 from slop.ui.views.report_stats import calculate_user_stats, build_stats_widgets
 from slop.slurm.history_fetcher import HistoryFetcher
 
@@ -28,7 +31,7 @@ class ScreenViewReport(TabCompletionMixin, u.WidgetWrap):
 
         self.status_text_widget = None
         self.selected_job = None
-        self._redraw_pending = False
+        self._user_search_in_flight = False
 
         self._init_completion()
         self._build_knowledge_base()
@@ -42,7 +45,6 @@ class ScreenViewReport(TabCompletionMixin, u.WidgetWrap):
         super().__init__(self.columns)
 
         self.columns.set_focus_column(1)
-        u.connect_signal(self.job_listwalker, 'modified', self.modified)
 
         self.history_fetcher.start_fetch(entity_type, entity_name)
 
@@ -72,33 +74,47 @@ class ScreenViewReport(TabCompletionMixin, u.WidgetWrap):
             self.search_suggestions.set_text(("faded", "No matches"))
 
     def _perform_user_search(self):
-        """Search for a new user and reload the view."""
+        """Search for a new user and reload the view (async)."""
         username = self.search_edit.get_edit_text().strip()
-        if not username:
+        if not username or self._user_search_in_flight:
+            return
+        if not hasattr(self.main_screen, 'open_search'):
             return
 
-        if hasattr(self.main_screen, 'open_search'):
-            import subprocess
+        self._user_search_in_flight = True
+        self.search_suggestions.set_text(("faded", f"Looking up {username}..."))
+
+        def worker():
             try:
-                result = subprocess.run(
+                check = subprocess.run(
                     ['getent', 'passwd', username],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
-                    timeout=2
+                    timeout=2,
                 )
-                if result.returncode != 0:
-                    self.search_suggestions.set_text(("error", f"User '{username}' not found"))
-                    return
-            except Exception:
-                pass
+                if check.returncode != 0:
+                    payload = ('not_found', None)
+                else:
+                    from slop.slurm import SreportFetcher
+                    sreport = SreportFetcher()
+                    payload = ('ok', sreport.fetch_user_utilization(username))
+            except Exception as e:
+                payload = ('error', str(e))
+            self.main_screen.schedule_main(self._on_user_search_done, username, payload)
 
-            from slop.slurm import SreportFetcher
-            sreport = SreportFetcher()
-            result = sreport.fetch_user_utilization(username)
-            if result:
-                self.main_screen.handle_search_result(result, 'user', username)
-            else:
-                self.search_suggestions.set_text(("error", f"No data for user '{username}'"))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_user_search_done(self, username, payload):
+        self._user_search_in_flight = False
+        status, data = payload
+        if status == 'not_found':
+            self.search_suggestions.set_text(("error", f"User '{username}' not found"))
+        elif status == 'error':
+            self.search_suggestions.set_text(("error", f"Search error: {data}"))
+        elif data:
+            self.main_screen.handle_search_result(data, 'user', username)
+        else:
+            self.search_suggestions.set_text(("error", f"No data for user '{username}'"))
 
     def _build_ui(self):
         """Build the four panels and assemble the two-column layout."""
@@ -157,7 +173,7 @@ class ScreenViewReport(TabCompletionMixin, u.WidgetWrap):
             'bg', 'normal_selected',
         )
         self.job_listwalker = u.SimpleFocusListWalker([self.status_text_widget])
-        self.job_listbox = u.ListBox(self.job_listwalker)
+        self.job_listbox = SafeListBox(self.job_listwalker)
 
         right_content = u.Pile([
             ('pack', self.header_pile),
@@ -169,21 +185,6 @@ class ScreenViewReport(TabCompletionMixin, u.WidgetWrap):
     def _build_stats_panel(self):
         self.stats_pile = u.Pile([u.Text(("faded", "Loading statistics..."))])
         return rounded_box(u.AttrMap(u.Filler(self.stats_pile, valign='top'), 'bg'), title='Job Statistics')
-
-    def modified(self):
-        """Handle walker modification (focus change)."""
-        pass
-
-    def _schedule_redraw(self):
-        """Schedule a screen redraw with debouncing to avoid flicker."""
-        if not self._redraw_pending:
-            self._redraw_pending = True
-            self.main_screen.loop.set_alarm_in(0.05, self._do_redraw)
-
-    def _do_redraw(self, *_):
-        """Execute the actual screen redraw."""
-        self._redraw_pending = False
-        self.main_screen.loop.draw_screen()
 
     def _build_column_header(self, representative_job):
         """Build a column header widget based on a representative job's display attributes."""
@@ -279,12 +280,9 @@ class ScreenViewReport(TabCompletionMixin, u.WidgetWrap):
         else:
             self.header_pile.contents = [(header_text, ('pack', None))]
 
-        u.disconnect_signal(self.job_listwalker, 'modified', self.modified)
         self.job_listwalker.clear()
         self.job_listwalker.append(u.AttrMap(detail_text, 'bg', 'normal_selected'))
         self.job_listwalker.set_focus(0)
-        u.connect_signal(self.job_listwalker, 'modified', self.modified)
-        self._schedule_redraw()
 
     def _on_history_complete(self, history_jobs, meta):
         """Handle sacct fetch completion.
@@ -307,14 +305,12 @@ class ScreenViewReport(TabCompletionMixin, u.WidgetWrap):
             header_widgets = [summary_text, u.Divider("─"), column_header, u.Divider("─")]
             self.header_pile.contents = [(w, ('pack', None)) for w in header_widgets]
 
-            u.disconnect_signal(self.job_listwalker, 'modified', self.modified)
             self.job_listwalker.clear()
             self.job_listwalker.extend([job.widget for job in history_jobs])
             for index, item in enumerate(self.job_listwalker):
                 if hasattr(item, "jobid"):
                     self.job_listwalker.set_focus(index)
                     break
-            u.connect_signal(self.job_listwalker, 'modified', self.modified)
 
             stats = calculate_user_stats(history_jobs)
             self.stats_pile.contents = [(w, ('pack', None)) for w in build_stats_widgets(stats)]
@@ -323,15 +319,11 @@ class ScreenViewReport(TabCompletionMixin, u.WidgetWrap):
             header_text = u.Text(("faded", f"Job History ({window_name}, 0 jobs) - Query: {hours}h in {duration:.1f}s"))
             self.header_pile.contents = [(header_text, ('pack', None))]
 
-            u.disconnect_signal(self.job_listwalker, 'modified', self.modified)
             self.job_listwalker.clear()
             self.job_listwalker.append(u.AttrMap(u.Text(("faded", "No jobs found in query window")), 'bg', 'normal_selected'))
             self.job_listwalker.set_focus(0)
-            u.connect_signal(self.job_listwalker, 'modified', self.modified)
 
             self.stats_pile.contents = [(u.Text(("faded", "  No jobs to analyze")), ('pack', None))]
-
-        self._schedule_redraw()
 
     def keypress(self, size, key):
         if self.columns.get_focus_column() == 0:

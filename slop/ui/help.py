@@ -67,6 +67,7 @@ def build_help_text(current_view):
         "",
         ("success", "CLUSTER VIEW (F5)"),
         "  Arrows   Scroll through GPU/node info",
+        "  e        Expand/compress node hostlists",
         "",
         ("faded", "─" * 60),
         ("faded", f"Current view: {current_view_name}"),

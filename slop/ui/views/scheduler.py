@@ -6,7 +6,7 @@ to sit at the bottom of F7). The two halves refresh independently — sdiag on
 its 30s timer, the pending list on every jobs_updated signal.
 """
 import urwid as u
-from slop.ui.widgets import SectionHeader, rounded_box
+from slop.ui.widgets import SafeListBox, SectionHeader, rounded_box
 from slop.ui.views.pending_list import PendingListWidget
 
 
@@ -48,7 +48,7 @@ class ScreenViewScheduler(u.WidgetWrap):
         self.main_screen = main_screen
         self.sdiag_fetcher = sdiag_fetcher
         self.walker = u.SimpleFocusListWalker([])
-        self.listbox = u.ListBox(self.walker)
+        self.listbox = SafeListBox(self.walker)
 
         self.pending_list = PendingListWidget(main_screen, main_screen.jobs)
 

@@ -5,7 +5,7 @@ from slop.slurm import is_running, is_ended, is_pending, reasons
 from slop.utils import format_duration, nice_tres
 from slop.ui.constants import EMPTY_PLACEHOLDER
 from slop.ui.state_style import state_attr
-from slop.ui.widgets import rounded_box, GenericOverlayText
+from slop.ui.widgets import rounded_box, GenericOverlayText, SafeListBox
 
 
 class JobInfoOverlay(u.WidgetWrap):
@@ -29,7 +29,7 @@ class JobInfoOverlay(u.WidgetWrap):
 
         # Create scrollable listbox
         walker = u.SimpleFocusListWalker(widgets)
-        listbox = u.ListBox(walker)
+        listbox = SafeListBox(walker)
 
         state = ' '.join(job.job_state)
         body = u.AttrMap(rounded_box(listbox, title=f"Job {job.job_id} - {state}"),
