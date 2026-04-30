@@ -5,6 +5,9 @@ https://github.com/user-attachments/assets/e1522f06-295f-4b20-b5cd-76cb24a0c9f1
 # slop
 A `top`-like utility for the Slurm HPC batch job scheduler
 
+# April 30th, 2026: v1.1.8 is released!
+
+Adds a new dashboard as a landing screen, and includes numerous minor improvements
 
 # April 29th, 2026: v1.1.7a is released!
 
