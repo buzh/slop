@@ -32,6 +32,9 @@ PALETTE = [
     ("error",            "light red",   "black"),
     ("info",             "light cyan",  "black"),
 
+    # F2 (Jobs) tab strip — bold label for the active tab; inactive tabs use 'faded'
+    ("tab_active",       "white, bold", "black"),
+
     # Overlay dimming (applied to lower layers in overlay stack)
     ("dim1",             "dark gray",   "black"),
     ("dim2",             "black",       "black"),

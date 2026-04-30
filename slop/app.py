@@ -11,7 +11,7 @@ from slop.slurm import (
     AdaptiveSacctFetcher,
 )
 from slop.ui.widgets import Header, Footer, GenericOverlayText, HelpOverlay
-from slop.ui.views import ScreenViewReport
+from slop.ui.views import ScreenViewReport, ScreenViewSplash
 from slop.ui.overlays import ConfirmExit, SearchOverlay
 from slop.ui.style import PALETTE
 from slop.ui.help import build_help_text, build_diagnostics_text
@@ -22,6 +22,25 @@ def unhandled_input(key: str) -> None:
     """Handle unhandled input (global fallback)."""
     if key == 'q':
         raise u.ExitMainLoop()
+
+
+class _OverlayDim(u.AttrMap):
+    """Marker AttrMap used to dim the bottom layer beneath an overlay.
+
+    Distinguishing this from the plain `AttrMap(view, 'bg')` that wraps the
+    bottom view lets `close_overlay` know which `AttrMap`s to peel.
+    """
+    pass
+
+
+def _is_overlay_body(body):
+    """True if `body` is a `frame.body` wrapper that holds an Overlay."""
+    return isinstance(body, u.AttrMap) and isinstance(body.original_widget, u.Overlay)
+
+
+def _peel_dim(widget):
+    """Strip the `_OverlayDim` wrap if present, otherwise return `widget` unchanged."""
+    return widget.original_widget if isinstance(widget, _OverlayDim) else widget
 
 
 class Slop(u.WidgetWrap):
@@ -54,8 +73,6 @@ class Slop(u.WidgetWrap):
 
         # State tracking
         self.overlay_showing = False
-        self.overlay_stack = []  # Stack of previous bodies for nested overlays
-        self._splash_body = None  # frame.body assigned for the splash overlay
 
         col_rows = u.raw_display.Screen().get_cols_rows()
         self.width = col_rows[0]
@@ -64,7 +81,11 @@ class Slop(u.WidgetWrap):
         # Views (must come after fetchers and `self.height` are set)
         self.current_username = os.getenv('USER') or os.getenv('USERNAME') or 'unknown'
         self.views = ViewManager(self)
-        self.body = u.AttrMap(self.views.users, 'bg')
+
+        # Show the loading splash as the actual body until the first job
+        # fetch completes — avoids flashing a half-rendered dashboard.
+        self.splash = ScreenViewSplash()
+        self.body = u.AttrMap(self.splash, 'bg')
         self.frame = u.Frame(header=self.header, body=self.body, footer=self.footer)
 
         # Handle window resize (if supported by the event loop)
@@ -75,38 +96,24 @@ class Slop(u.WidgetWrap):
 
         super().__init__(self.frame)
 
-        # Show initial screen: My Jobs if user has jobs, otherwise All Users
-        if self.views.my_jobs.has_jobs():
-            self.show_screen_my_jobs()
-        else:
-            self.show_screen_users()
-
-        self.show_splash_screen()
+        self.header.update("Loading")
+        self._wait_for_initial_data()
 
     # --- Compatibility shims --------------------------------------------------
-    # External callers (e.g., overlays, sub-views) refer to `current_view`,
-    # `last_f1_view`, and the `show_screen_*` methods. Forward them to ViewManager.
+    # External callers (e.g., overlays, sub-views) refer to `current_view` and
+    # the `show_screen_*` methods. Forward them to ViewManager.
 
     @property
     def current_view(self):
         return self.views.current
 
-    @property
-    def last_f1_view(self):
-        return self.views.last_f1_view
-
+    def show_screen_dashboard(self): return self.views.show_dashboard()
+    def show_screen_jobs(self):     return self.views.show_jobs()
     def show_screen_my_jobs(self):  return self.views.show_my_jobs()
-    def show_screen_users(self):    return self.views.show_users()
-    def show_screen_accounts(self): return self.views.show_accounts()
-    def show_screen_partitions(self): return self.views.show_partitions()
-    def show_screen_states(self):   return self.views.show_states()
     def show_screen_cluster(self):  return self.views.show_cluster()
     def show_screen_queue(self):    return self.views.show_queue()
     def show_screen_scheduler(self): return self.views.show_scheduler()
     def show_screen_report(self):   return self.views.show_report()
-
-    def get_f1_label(self):
-        return self.views.f1_label()
 
     # --- Refresh / resize ----------------------------------------------------
 
@@ -149,10 +156,12 @@ class Slop(u.WidgetWrap):
         for screen in self.views.all_resizable():
             screen.on_resize()
 
-        footer_types = ['myjobs', 'users', 'accounts', 'partitions', 'states',
-                        'cluster', 'history', 'queue', 'scheduler']
+        # JOBS (index 1) reports its own footer key based on the active sub-tab;
+        # everything else maps directly by view ID.
+        footer_types = ['dashboard', None, 'myjobs', 'cluster', 'history', 'queue', 'scheduler']
         if 0 <= self.views.current < len(footer_types):
-            self.footer.update(footer_types[self.views.current], f1_label=self.get_f1_label())
+            ft = footer_types[self.views.current] or self.views.jobs_view.view_type
+            self.footer.update(ft)
 
         self.loop.draw_screen()
 
@@ -202,10 +211,6 @@ class Slop(u.WidgetWrap):
             search_type: 'user', 'account', 'job', or 'node'
             search_value: Username, account name, job ID, or node name
         """
-        # Save previous F1 view (for Esc to return to)
-        if self.views.current in (0, 1):
-            self.views.last_f1_view = self.views.current
-
         if search_type in ('user', 'account'):
             report = ScreenViewReport(self, search_type, search_value, result_data, self.adaptive_sacct)
             self.views.install_report(report, search_type, search_value)
@@ -222,35 +227,13 @@ class Slop(u.WidgetWrap):
             # TODO: dedicated hardware info view
             self.open_overlay(GenericOverlayText(self, f"Node search for '{search_value}' - Hardware info view coming soon!"))
 
-    def show_splash_screen(self):
-        """Display splash screen while initial data loads."""
-        overlay = GenericOverlayText(self, "Welcome to slop\nPlease wait while fetching job data")
-        self.open_overlay(overlay)
-        self._splash_body = self.frame.body
-
+    def _wait_for_initial_data(self):
+        """Swap the splash for the dashboard once the first jobs fetch lands."""
         def on_job_update(*_args):
-            self._dismiss_splash()
             u.disconnect_signal(self.jobs, 'jobs_updated', on_job_update)
+            self.show_screen_dashboard()
 
         u.connect_signal(self.jobs, 'jobs_updated', on_job_update)
-
-    def _dismiss_splash(self):
-        """Remove the splash overlay wherever it sits in the overlay stack.
-
-        The user may have opened other overlays on top of (or dismissed) the
-        splash before initial data arrives. Don't blindly pop the top.
-        """
-        body = self._splash_body
-        self._splash_body = None
-        if body is None:
-            return
-        if self.frame.body is body:
-            self.close_overlay()
-        else:
-            try:
-                self.overlay_stack.remove(body)
-            except ValueError:
-                pass
 
     # --- Input ---------------------------------------------------------------
 
@@ -259,14 +242,10 @@ class Slop(u.WidgetWrap):
             self.open_overlay(self.confirmexit, height=3)
             return
 
-        if key == 'f1':
-            self.views.handle_f1()
-            return
-
         view_map = {
-            'f2': self.show_screen_accounts,
-            'f3': self.show_screen_partitions,
-            'f4': self.show_screen_states,
+            'f1': self.show_screen_dashboard,
+            'f2': self.show_screen_jobs,
+            'f3': self.show_screen_my_jobs,
             'f5': self.show_screen_cluster,
             'f6': self.show_screen_report,
             'f7': self.show_screen_queue,
@@ -288,31 +267,34 @@ class Slop(u.WidgetWrap):
             self.show_diagnostics()
             return
 
+        # Dashboard-only shortcut: jump to history for the current user.
+        if key == 'h' and self.views.current == 0:
+            self.show_screen_report()
+            return
+
         if key == 'esc' and self.overlay_showing:
             self.close_overlay()
             return
 
         return super().keypress(size, key)
 
-    # --- Overlay stack -------------------------------------------------------
+    # --- Overlay chain -------------------------------------------------------
+    # Overlays compose natively as nested `urwid.Overlay` widgets: each new
+    # overlay wraps the current `frame.body` as its `bottom_w`. The chain is
+    # the linked list rooted at `frame.body`, so there is no parallel stack
+    # that can drift out of sync with the visible widget.
 
     def open_overlay(self, widget, height=None):
-        """Display an overlay widget on top of current screen."""
-        MAX_OVERLAY_DEPTH = 3
-        if len(self.overlay_stack) >= MAX_OVERLAY_DEPTH:
-            return
-
+        """Display an overlay widget on top of the current frame body."""
         bottom = self.frame.body
-        self.overlay_stack.append(bottom)
-
-        depth = len(self.overlay_stack) - 1
+        depth = self._overlay_depth(bottom)
         offset = depth * 3  # 3% offset per level for visual layering
 
         if depth > 0:
             dim_level = min(depth, 2)
             dim_attr = f'dim{dim_level}'
-            attr_map = {attr[0]: dim_attr for attr in self.palette}
-            bottom = u.AttrMap(bottom, attr_map=attr_map)
+            dim_attrs = {attr[0]: dim_attr for attr in self.palette}
+            bottom = _OverlayDim(bottom, attr_map=dim_attrs)
 
         if height is None:
             height = getattr(widget, "height", getattr(widget, "overlay_height", int(self.height * 0.8)))
@@ -327,12 +309,48 @@ class Slop(u.WidgetWrap):
         self.overlay_showing = True
 
     def close_overlay(self):
-        """Close the overlay and return to previous screen."""
-        if self.overlay_stack:
-            self.frame.body = self.overlay_stack.pop()
-            self.overlay_showing = len(self.overlay_stack) > 0
-        else:
+        """Peel the topmost overlay layer off `frame.body`."""
+        if not _is_overlay_body(self.frame.body):
             self.overlay_showing = False
+            return
+        ov = self.frame.body.original_widget
+        self.frame.body = _peel_dim(ov.bottom_w)
+        self.overlay_showing = _is_overlay_body(self.frame.body)
+
+    @staticmethod
+    def _overlay_depth(body):
+        """Count how many overlays sit above the bottom view in `body`."""
+        depth = 0
+        while _is_overlay_body(body):
+            depth += 1
+            body = _peel_dim(body.original_widget.bottom_w)
+        return depth
+
+    def replace_bottom_body(self, new_body):
+        """Replace the bottom view in the overlay chain with `new_body`.
+
+        With no overlay up this just rewrites `frame.body`. With overlays
+        stacked it descends to the deepest `Overlay` and rewrites its
+        `bottom_w` (preserving any dim wrap), so dismissing every overlay
+        reveals the freshly chosen view rather than the one that was current
+        when the overlay opened.
+        """
+        body = self.frame.body
+        if not _is_overlay_body(body):
+            self.frame.body = new_body
+            return
+        while True:
+            ov = body.original_widget
+            bottom = ov.bottom_w
+            inner = _peel_dim(bottom)
+            if _is_overlay_body(inner):
+                body = inner
+                continue
+            if isinstance(bottom, _OverlayDim):
+                ov.bottom_w = _OverlayDim(new_body, attr_map=bottom.get_attr_map())
+            else:
+                ov.bottom_w = new_body
+            return
 
     def startloop(self):
         self.loop.set_alarm_in(1, lambda loop, user_data: asyncio.create_task(self.auto_refresh()))

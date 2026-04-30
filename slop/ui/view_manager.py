@@ -1,15 +1,13 @@
 """Owns the screen instances and handles view switching for the main app.
 
 `Slop` keeps thin `show_screen_*` proxies so external callers (e.g., overlays
-calling `main_screen.show_screen_users()`) and the `keypress` dispatch don't
-need to learn a new API.
+calling `main_screen.show_screen_dashboard()`) and the `keypress` dispatch
+don't need to learn a new API.
 """
 import urwid as u
 from slop.ui.views import (
-    ScreenViewUsers,
-    ScreenViewAccounts,
-    ScreenViewPartitions,
-    ScreenViewStates,
+    ScreenViewDashboard,
+    ScreenViewJobs,
     ScreenViewCluster,
     ScreenViewMyJobs,
     ScreenViewQueue,
@@ -18,8 +16,10 @@ from slop.ui.views import (
 )
 
 
-# View IDs (preserved from app.py for compatibility with main_screen.current_view)
-MY_JOBS, USERS, ACCOUNTS, PARTITIONS, STATES, CLUSTER, REPORT, QUEUE, SCHEDULER = range(9)
+# View IDs. The first three (DASHBOARD, JOBS, MY_JOBS) reflect the new
+# F-key layout; the trailing IDs preserve the existing values so external
+# callers using the same numeric constants still resolve correctly.
+DASHBOARD, JOBS, MY_JOBS, CLUSTER, REPORT, QUEUE, SCHEDULER = range(7)
 
 
 class ViewManager:
@@ -27,34 +27,30 @@ class ViewManager:
 
     def __init__(self, sc):
         self.sc = sc
+        self.dashboard = ScreenViewDashboard(sc, sc.jobs, sc.cluster_fetcher)
+        self.jobs_view = ScreenViewJobs(sc, sc.jobs)
         self.my_jobs = ScreenViewMyJobs(sc, sc.jobs, sc.current_username, sc.adaptive_sacct)
-        self.users = ScreenViewUsers(sc, sc.jobs)
-        self.accounts = ScreenViewAccounts(sc, sc.jobs)
-        self.partitions = ScreenViewPartitions(sc, sc.jobs)
-        self.states = ScreenViewStates(sc, sc.jobs)
         self.cluster = ScreenViewCluster(sc, sc.cluster_fetcher)
         self.queue = ScreenViewQueue(sc, sc.jobs)
         self.scheduler = ScreenViewScheduler(sc, sc.sdiag_fetcher)
         self.report = None  # Created on demand
 
-        self.current = USERS
-        self.last_f1_view = None
+        self.current = DASHBOARD
 
     # --- Iteration helpers used by auto_refresh / on_resize ----------------
 
     def auto_refresh_target(self):
         """Return the screen whose `update()` should run after a data refresh, if any."""
         by_id = {
-            MY_JOBS: self.my_jobs, USERS: self.users, ACCOUNTS: self.accounts,
-            PARTITIONS: self.partitions, STATES: self.states, CLUSTER: self.cluster,
-            QUEUE: self.queue, SCHEDULER: self.scheduler,
+            DASHBOARD: self.dashboard, JOBS: self.jobs_view, MY_JOBS: self.my_jobs,
+            CLUSTER: self.cluster, QUEUE: self.queue, SCHEDULER: self.scheduler,
         }
         return by_id.get(self.current)
 
     def all_resizable(self):
         """All screens that should receive `on_resize()`."""
-        screens = [self.my_jobs, self.users, self.accounts, self.partitions,
-                   self.states, self.cluster, self.queue, self.scheduler]
+        screens = [self.dashboard, self.jobs_view, self.my_jobs,
+                   self.cluster, self.queue, self.scheduler]
         if self.report is not None:
             screens.append(self.report)
         return screens
@@ -65,32 +61,22 @@ class ViewManager:
         if view_id != self.current:
             self.sc.jobs.reset_array_collapse()
         self.current = view_id
-        new_body = u.AttrMap(screen, 'bg')
-        # If an overlay (e.g. the splash) is hiding the body, rewrite the
-        # bottom of the stack so dismissing the overlay restores the view
-        # the user just picked, not the one current when the overlay opened.
-        if self.sc.overlay_stack:
-            self.sc.overlay_stack[0] = new_body
-        else:
-            self.sc.frame.body = new_body
+        # `replace_bottom_body` rewrites the deepest layer of the overlay
+        # chain when overlays are up, so dismissing them reveals the view the
+        # user just picked rather than the one current when the overlay opened.
+        self.sc.replace_bottom_body(u.AttrMap(screen, 'bg'))
         screen.update()
         self.sc.header.update(header_text)
-        self.sc.footer.update(footer_type, f1_label=self.f1_label())
+        self.sc.footer.update(footer_type)
+
+    def show_dashboard(self):
+        self.show(DASHBOARD, self.dashboard, "Dashboard", 'dashboard')
+
+    def show_jobs(self):
+        self.show(JOBS, self.jobs_view, "Jobs", self.jobs_view.view_type)
 
     def show_my_jobs(self):
         self.show(MY_JOBS, self.my_jobs, f"My Jobs ({self.sc.current_username})", 'myjobs')
-
-    def show_users(self):
-        self.show(USERS, self.users, "All Users", 'users')
-
-    def show_accounts(self):
-        self.show(ACCOUNTS, self.accounts, "Accounts", 'accounts')
-
-    def show_partitions(self):
-        self.show(PARTITIONS, self.partitions, "Partitions", 'partitions')
-
-    def show_states(self):
-        self.show(STATES, self.states, "Job States", 'states')
 
     def show_cluster(self):
         self.show(CLUSTER, self.cluster, "Cluster Resources", 'cluster')
@@ -131,30 +117,6 @@ class ViewManager:
         self.report = report_screen
         entity_label = "User" if entity_type == 'user' else "Account"
         self.current = REPORT
-        new_body = u.AttrMap(report_screen, 'bg')
-        if self.sc.overlay_stack:
-            self.sc.overlay_stack[0] = new_body
-        else:
-            self.sc.frame.body = new_body
+        self.sc.replace_bottom_body(u.AttrMap(report_screen, 'bg'))
         self.sc.header.update(f"{entity_label} Report - {entity_name}")
-        self.sc.footer.update('history', f1_label=self.f1_label())
-
-    # --- F1 toggle ---------------------------------------------------------
-
-    def f1_label(self):
-        """Label for the F1 hint in the footer."""
-        if self.current in (MY_JOBS, USERS):
-            self.last_f1_view = self.current
-            return "All Users" if self.current == MY_JOBS else "My Jobs"
-        return "My Jobs" if self.last_f1_view == MY_JOBS else "All Users"
-
-    def handle_f1(self):
-        """F1 toggles MY_JOBS↔USERS or returns to whichever was last."""
-        if self.current == MY_JOBS:
-            self.show_users()
-        elif self.current == USERS:
-            self.show_my_jobs()
-        elif self.last_f1_view == MY_JOBS:
-            self.show_my_jobs()
-        else:
-            self.show_users()
+        self.sc.footer.update('history')

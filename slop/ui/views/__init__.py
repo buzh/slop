@@ -5,6 +5,7 @@ from slop.ui.views.cluster import ScreenViewCluster
 from slop.ui.views.queue import ScreenViewQueue
 from slop.ui.views.report import ScreenViewReport
 from slop.ui.views.scheduler import ScreenViewScheduler
+from slop.ui.views.splash import ScreenViewSplash
 
 
 ScreenViewUsers = make_view(
@@ -44,9 +45,16 @@ ScreenViewStates = make_view(
 )
 
 
+# Imported after the make_view() factories so `jobs.py` can pick them up.
+from slop.ui.views.dashboard import ScreenViewDashboard  # noqa: E402
+from slop.ui.views.jobs import ScreenViewJobs  # noqa: E402
+
+
 __all__ = [
     "TwoColumnJobView",
     "make_view",
+    "ScreenViewDashboard",
+    "ScreenViewJobs",
     "ScreenViewMyJobs",
     "ScreenViewUsers",
     "ScreenViewAccounts",
@@ -56,4 +64,5 @@ __all__ = [
     "ScreenViewQueue",
     "ScreenViewReport",
     "ScreenViewScheduler",
+    "ScreenViewSplash",
 ]
