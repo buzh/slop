@@ -5,32 +5,36 @@ https://github.com/user-attachments/assets/e1522f06-295f-4b20-b5cd-76cb24a0c9f1
 # slop
 A `top`-like utility for the Slurm HPC batch job scheduler
 
-# April 19th, 2026: v1.1.5a hotfix release
+# April 30th, 2026: v1.1.8 is released!
 
-Fixes possible crash (thanks, @csniper-patrick)
+Adds a new dashboard as a landing screen, and includes numerous minor improvements
 
-# April 17th, 2026: v1.1.5 is released
+# April 29th, 2026: v1.1.7a is released!
 
-Good news, everyone! Slop 1.1.5 is here with loads of optimizations and bug fixes, and
-we also provide RPM files for RHEL/Rocky/Alma 9 for your convenience.
+Fixes loop when a user has no job history
 
-# April 12th, 2026: Version 1.1 is released!
+# April 29th, 2026: v1.1.7 is released!
 
-This is a major overhaul which introduces several new features and improvements, including:
+Numerous minor bug fixes, as well as a code overhaul that should improve TUI performance by handing off more of the legwork to Urwid itself.
 
-- Views for accounts, partitions and job states
-- A brand new cluster resource monitor
-- Search functionality; just hit `/` and type in a job id, user or node name
-- Ability to inspect older jobs
-- A ton of optimizations and performance improvements
+# April 21st, 2026: v1.1.6 is released!
 
-Enjoy Slop!
-It's highly addictive!
+This version introduces a brand new "job flow" screen which gives a live view of how jobs are starting and ending.
+It will show an ETA for the highest priority pending jobs, which jobs have just started, which are about to end, and the most recent jobs that did end.
+
+There is also a new screen that displays statistics from the scheduler and backfiller, along with a view of the pending jobs per partition. These two are still work in progress, so consider this a preview.
+
+Comments or feedback is highly appreciated, especially bug or crash reports. Even a "this works on my cluster" is helpful, since I only have access to so many systems - and there are many ways to configure slurm.
 
 # dependencies and requirements
 
-Uses [Urwid](https://urwid.org) to build the TUI.
-Runs on any host with `scontrol` set up.
+Slurm >= 25.x with json output is explicitly supported. Older versions should work fine (as long as it supports json), but I'll only fix bugs from 25 and up.
+
+Python >= 3.9
+
+[Urwid](https://urwid.org) >= 4.0.0 
+
+Any distro or architecture should work just fine, as long as the above is supported.
 
 # install/run locally
 
@@ -53,3 +57,15 @@ pip install pyinstaller
 pyinstaller --collect-all=urwid --onefile slop/main.py -n slop
 cp dist/slop /somewhere/in/path  # "slop" is the resulting binary
 ```
+
+# RPM
+
+You can grab pre-built x86_64 RPMs from the Releases page. Other architectures might be added in the future
+
+# DEB
+
+I currently don't build .deb, but if popular demand arises I'll look into it.
+
+
+Enjoy slop!
+It's highly addictive!
