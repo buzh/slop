@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="img/slop-top.png" alt="slop logo" width="800"/>
+  <img src="img/slop-top.png" alt="slop logo" width="500"/>
 </p>
 
 <h1 align="center">slop</h1>
