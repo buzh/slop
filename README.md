@@ -57,11 +57,11 @@
 </p>
 
 <p align="center">
-  <img src="img/screenshot-4.png" alt="Screenshot 5" width="800"/>
+  <img src="img/screenshot-5.png" alt="Screenshot 5" width="800"/>
 </p>
 
 <p align="center">
-  <img src="img/screenshot-4.png" alt="Screenshot 6" width="800"/>
+  <img src="img/screenshot-6.png" alt="Screenshot 6" width="800"/>
 </p>
 
 </details>
