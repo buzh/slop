@@ -1,9 +1,11 @@
+<p align="center">
+  <img src="img/sloplogo-smp.png" alt="slop logo" width="220"/>
+</p>
 
+<h1 align="center">slop</h1>
+<p align="center"><i>A <code>top</code>-like utility for the Slurm HPC batch job scheduler</i></p>
 
 https://github.com/user-attachments/assets/e1522f06-295f-4b20-b5cd-76cb24a0c9f1
-
-# slop
-A `top`-like utility for the Slurm HPC batch job scheduler
 
 # April 30th, 2026: v1.1.8 is released!
 
@@ -67,5 +69,8 @@ You can grab pre-built x86_64 RPMs from the Releases page. Other architectures m
 I currently don't build .deb, but if popular demand arises I'll look into it.
 
 
-Enjoy slop!
-It's highly addictive!
+<p align="center">
+  <img src="img/slop-smp.png" alt="slop character" width="200"/>
+</p>
+
+<h3 align="center">Enjoy slop! &mdash; it's highly addictive!</h3>
