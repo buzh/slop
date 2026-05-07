@@ -238,6 +238,10 @@ class Slop(u.WidgetWrap):
     # --- Input ---------------------------------------------------------------
 
     def keypress(self, size, key):
+        # Let child screens try to handle the key first
+        if super().keypress(size, key) is None:
+            return None
+
         if key in ('q', 'f10'):
             self.open_overlay(self.confirmexit, height=3)
             return
@@ -276,7 +280,7 @@ class Slop(u.WidgetWrap):
             self.close_overlay()
             return
 
-        return super().keypress(size, key)
+        return key
 
     # --- Overlay chain -------------------------------------------------------
     # Overlays compose natively as nested `urwid.Overlay` widgets: each new
