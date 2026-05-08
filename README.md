@@ -76,6 +76,21 @@
 
 Any distro or architecture should work just fine, as long as the above is supported.
 
+### Install/run with [uv](https://github.com/astral-sh/uv)
+
+The fastest path. `uv` handles the Python interpreter, the virtualenv, and the dependency for you.
+
+```
+# install as a global command
+uv tool install git+https://github.com/buzh/slop
+slop
+
+# or run one-shot, without installing
+uvx --from git+https://github.com/buzh/slop slop
+```
+
+To upgrade later: `uv tool upgrade slop`. To remove: `uv tool uninstall slop`.
+
 ### Install/run locally
 
 ```
