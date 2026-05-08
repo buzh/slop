@@ -19,12 +19,6 @@ from slop.ui.help import build_help_text, build_diagnostics_text
 from slop.ui.view_manager import ViewManager
 
 
-def unhandled_input(key: str) -> None:
-    """Handle unhandled input (global fallback)."""
-    if key == 'q':
-        raise u.ExitMainLoop()
-
-
 class _OverlayDim(u.AttrMap):
     """Marker AttrMap used to dim the bottom layer beneath an overlay.
 
@@ -52,7 +46,7 @@ class Slop(u.WidgetWrap):
 
         # Event loop and fetchers
         self.asyncloop = u.AsyncioEventLoop()
-        self.loop = u.MainLoop(self, self.palette, event_loop=self.asyncloop, unhandled_input=unhandled_input)
+        self.loop = u.MainLoop(self, self.palette, event_loop=self.asyncloop)
         self.offline_data_dir = offline_data_dir
         self.jobfetcher = SlurmJobFetcher(loop=self.asyncloop._loop, offline_data_dir=offline_data_dir)
         self.cluster_fetcher = SlurmClusterFetcher(loop=self.asyncloop._loop, offline_data_dir=offline_data_dir)
