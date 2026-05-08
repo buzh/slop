@@ -313,6 +313,16 @@ class Slop(u.WidgetWrap):
         if super().keypress(size, key) is None:
             return None
 
+        # When an overlay is up, only esc is handled at the global level —
+        # everything else is swallowed so global hotkeys can't stack new
+        # overlays or switch views out from under the modal. The overlay's
+        # own widget already had first dibs via super().keypress().
+        if self.overlay_showing:
+            if key == 'esc':
+                self.close_overlay()
+                return None
+            return key
+
         if key in ('q', 'f10'):
             self.open_overlay(self.confirmexit, height=3)
             return
@@ -347,10 +357,6 @@ class Slop(u.WidgetWrap):
             self.show_screen_report()
             return
 
-        if key == 'esc' and self.overlay_showing:
-            self.close_overlay()
-            return
-
         return key
 
     # --- Overlay chain -------------------------------------------------------
@@ -361,6 +367,14 @@ class Slop(u.WidgetWrap):
 
     def open_overlay(self, widget, height=None):
         """Display an overlay widget on top of the current frame body."""
+        # No-op if `widget` is already the topmost overlay. Callers that
+        # forget to gate on `overlay_showing` (or reuse a singleton like
+        # `self.confirmexit`) would otherwise wrap the same widget into a
+        # second `u.Overlay` chained on top of itself — visually a stacked
+        # duplicate, structurally a widget reused under two parents, which
+        # is an urwid anti-pattern that breeds focus / redraw bugs.
+        if self._top_overlay_widget() is widget:
+            return
         bottom = self.frame.body
         depth = self._overlay_depth(bottom)
         offset = depth * 3  # 3% offset per level for visual layering
@@ -400,6 +414,16 @@ class Slop(u.WidgetWrap):
             depth += 1
             body = _peel_dim(body.original_widget.bottom_w)
         return depth
+
+    def _top_overlay_widget(self):
+        """The widget passed to the most recent `open_overlay` call, or
+        None if no overlay is showing. `open_overlay` wraps the widget in
+        a `u.Frame`, so unwrap one level to recover the original."""
+        body = self.frame.body
+        if not _is_overlay_body(body):
+            return None
+        framed = body.original_widget.top_w
+        return getattr(framed, 'body', None)
 
     def replace_bottom_body(self, new_body):
         """Replace the bottom view in the overlay chain with `new_body`.
