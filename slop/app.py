@@ -10,18 +10,13 @@ from slop.slurm import (
     SreportFetcher,
     AdaptiveSacctFetcher,
 )
+from slop.slurm.load_governor import LoadGovernor, Tier
 from slop.ui.widgets import Header, Footer, GenericOverlayText, HelpOverlay
 from slop.ui.views import ScreenViewReport, ScreenViewSplash
-from slop.ui.overlays import ConfirmExit, SearchOverlay
+from slop.ui.overlays import ConfirmExit, SearchOverlay, HaltedModal
 from slop.ui.style import PALETTE
 from slop.ui.help import build_help_text, build_diagnostics_text
 from slop.ui.view_manager import ViewManager
-
-
-def unhandled_input(key: str) -> None:
-    """Handle unhandled input (global fallback)."""
-    if key == 'q':
-        raise u.ExitMainLoop()
 
 
 class _OverlayDim(u.AttrMap):
@@ -51,7 +46,7 @@ class Slop(u.WidgetWrap):
 
         # Event loop and fetchers
         self.asyncloop = u.AsyncioEventLoop()
-        self.loop = u.MainLoop(self, self.palette, event_loop=self.asyncloop, unhandled_input=unhandled_input)
+        self.loop = u.MainLoop(self, self.palette, event_loop=self.asyncloop)
         self.offline_data_dir = offline_data_dir
         self.jobfetcher = SlurmJobFetcher(loop=self.asyncloop._loop, offline_data_dir=offline_data_dir)
         self.cluster_fetcher = SlurmClusterFetcher(loop=self.asyncloop._loop, offline_data_dir=offline_data_dir)
@@ -60,11 +55,16 @@ class Slop(u.WidgetWrap):
         self.adaptive_sacct = AdaptiveSacctFetcher(offline_data_dir=offline_data_dir)
         self.jobs = Jobs(self.jobfetcher.fetch_sync())
         self.refreshing = False
-        # Throttle slow-moving fetchers below the 3s job-refresh cadence.
-        self._cluster_interval = 10
+        # Cadences are owned by the load governor; these are the next-fire
+        # deadlines for the cluster and sdiag fetchers (jobs is checked every
+        # tick against the governor cadence).
         self._cluster_next_fetch = 0.0
-        self._sdiag_interval = 30
         self._sdiag_next_fetch = 0.0
+        self._jobs_next_fetch = 0.0
+        self.governor = LoadGovernor()
+        self._halted_modal_shown = False
+        self._sdiag_preflight_done = False
+        self._halted_modal = None
 
         # UI components
         self.header = Header(self)
@@ -124,19 +124,53 @@ class Slop(u.WidgetWrap):
         self.refreshing = True
 
         try:
-            # Run all due fetchers in parallel; cluster/sdiag are throttled
-            # below the 3s job cadence and only run when their interval has
-            # elapsed. Wait for all before announcing the refresh, so views
-            # that re-render on jobs_updated see fresh aux data too.
+            # Pre-flight sdiag once at startup so the very first scontrol runs
+            # at a tier informed by the controller's current load, rather than
+            # the optimistic NORMAL default.
+            if not self._sdiag_preflight_done:
+                await self.sdiag_fetcher.fetch()
+                self.governor.update_from_signals(self.sdiag_fetcher.compute_signals())
+                self._sdiag_preflight_done = True
+                now = time.monotonic()
+                self._sdiag_next_fetch = now + self.governor.sdiag_cadence()
+                self._refresh_indicator()
+
+            if self.governor.tier == Tier.HALTED:
+                # Suspended — the modal owns the next move.
+                return
+
             now = time.monotonic()
-            fetches = [self.jobfetcher.update_once()]
+            tier_changed = False
+
+            fetches = []
+            if now >= self._jobs_next_fetch:
+                fetches.append(self.jobfetcher.update_once())
+                self._jobs_next_fetch = now + self.governor.jobs_cadence()
             if now >= self._cluster_next_fetch:
                 fetches.append(self.cluster_fetcher.fetch())
-                self._cluster_next_fetch = now + self._cluster_interval
-            if now >= self._sdiag_next_fetch:
+                self._cluster_next_fetch = now + self.governor.cluster_cadence()
+            sdiag_due = now >= self._sdiag_next_fetch
+            if sdiag_due:
                 fetches.append(self.sdiag_fetcher.fetch())
-                self._sdiag_next_fetch = now + self._sdiag_interval
-            await asyncio.gather(*fetches)
+            if fetches:
+                await asyncio.gather(*fetches)
+
+            if sdiag_due:
+                tier_changed = self.governor.update_from_signals(
+                    self.sdiag_fetcher.compute_signals()
+                )
+                self._sdiag_next_fetch = time.monotonic() + self.governor.sdiag_cadence()
+
+            if self.governor.check_halted():
+                tier_changed = True
+
+            if tier_changed:
+                self._refresh_indicator()
+
+            if self.governor.tier == Tier.HALTED:
+                self._show_halted_modal()
+                return
+
             slurm_job_data = await self.jobfetcher.fetch()
             self.jobs.update_slurmdata(slurm_job_data)
 
@@ -145,7 +179,35 @@ class Slop(u.WidgetWrap):
                 target.update()
         finally:
             self.refreshing = False
-            self.loop.set_alarm_in(3, lambda loop, user_data: asyncio.create_task(self.auto_refresh()))
+            # Re-arm at a cadence that lets us notice the soonest deadline.
+            # Cap at the jobs cadence since that's what most users perceive.
+            delay = max(1, min(self.governor.jobs_cadence(), 3))
+            self.loop.set_alarm_in(delay, lambda loop, user_data: asyncio.create_task(self.auto_refresh()))
+
+    def _refresh_indicator(self):
+        attr, dot, label = self.governor.indicator()
+        self.header.set_indicator(attr, dot, label)
+
+    def _show_halted_modal(self):
+        if self._halted_modal_shown:
+            return
+        self._halted_modal_shown = True
+        self._halted_modal = HaltedModal(self)
+        self.open_overlay(self._halted_modal, height=self._halted_modal.overlay_height)
+
+    def resume_after_halt(self):
+        """Modal-OK callback — clear governor state and resume refreshing."""
+        self.governor.reset()
+        self._sdiag_preflight_done = False
+        self._jobs_next_fetch = 0.0
+        self._cluster_next_fetch = 0.0
+        self._sdiag_next_fetch = 0.0
+        self._refresh_indicator()
+        if self._halted_modal_shown:
+            self.close_overlay()
+            self._halted_modal_shown = False
+            self._halted_modal = None
+        asyncio.create_task(self.auto_refresh())
 
     def on_resize(self, *args):
         """Handle terminal resize events."""
@@ -238,9 +300,22 @@ class Slop(u.WidgetWrap):
     # --- Input ---------------------------------------------------------------
 
     def keypress(self, size, key):
+        # Any user activity resets the HALTED idle timer so an active session
+        # never gets paused, even if the controller stays in BACKOFF.
+        self.governor.note_keypress()
         # Let child screens try to handle the key first
         if super().keypress(size, key) is None:
             return None
+
+        # When an overlay is up, only esc is handled at the global level —
+        # everything else is swallowed so global hotkeys can't stack new
+        # overlays or switch views out from under the modal. The overlay's
+        # own widget already had first dibs via super().keypress().
+        if self.overlay_showing:
+            if key == 'esc':
+                self.close_overlay()
+                return None
+            return key
 
         if key in ('q', 'f10'):
             self.open_overlay(self.confirmexit, height=3)
@@ -276,10 +351,6 @@ class Slop(u.WidgetWrap):
             self.show_screen_report()
             return
 
-        if key == 'esc' and self.overlay_showing:
-            self.close_overlay()
-            return
-
         return key
 
     # --- Overlay chain -------------------------------------------------------
@@ -290,6 +361,14 @@ class Slop(u.WidgetWrap):
 
     def open_overlay(self, widget, height=None):
         """Display an overlay widget on top of the current frame body."""
+        # No-op if `widget` is already the topmost overlay. Callers that
+        # forget to gate on `overlay_showing` (or reuse a singleton like
+        # `self.confirmexit`) would otherwise wrap the same widget into a
+        # second `u.Overlay` chained on top of itself — visually a stacked
+        # duplicate, structurally a widget reused under two parents, which
+        # is an urwid anti-pattern that breeds focus / redraw bugs.
+        if self._top_overlay_widget() is widget:
+            return
         bottom = self.frame.body
         depth = self._overlay_depth(bottom)
         offset = depth * 3  # 3% offset per level for visual layering
@@ -329,6 +408,16 @@ class Slop(u.WidgetWrap):
             depth += 1
             body = _peel_dim(body.original_widget.bottom_w)
         return depth
+
+    def _top_overlay_widget(self):
+        """The widget passed to the most recent `open_overlay` call, or
+        None if no overlay is showing. `open_overlay` wraps the widget in
+        a `u.Frame`, so unwrap one level to recover the original."""
+        body = self.frame.body
+        if not _is_overlay_body(body):
+            return None
+        framed = body.original_widget.top_w
+        return getattr(framed, 'body', None)
 
     def replace_bottom_body(self, new_body):
         """Replace the bottom view in the overlay chain with `new_body`.

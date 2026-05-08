@@ -107,9 +107,10 @@ def _format_count(n):
 
 def _gap_footer(text):
     """Faded one-line summary that sits at the bottom of a section to
-    describe jobs which logically belong "between" this section and the
-    one below it but don't qualify for any visible row. The leading
-    ellipsis hints at continuation from the rows above."""
+    describe jobs that exist in the lifecycle but don't qualify for any
+    visible row — either the steady-state pool sitting between two
+    sections, or the queue tail extending below the last visible section.
+    The leading ellipsis hints at continuation from the rows above."""
     return u.Text(("faded", f"  …{text}"))
 
 
@@ -239,7 +240,7 @@ STARTED_LAYOUT = [
 # Pending jobs lead with ETA — that's the field a scheduler-watcher cares
 # about most — and have no St / Nodes (they all share state PD and aren't
 # allocated yet).
-ABOUT_LAYOUT = [
+PENDING_LAYOUT = [
     ('ETA',       'left',  'given', 11,        'clip'),
     ('Job ID',    'right', 'given', _JOBID_W,  'clip'),
     USER, PARTITION,
@@ -420,7 +421,7 @@ class AboutToStartJobWidget(_JobRow):
         else:
             attr = reason_attr(reason)
         super().__init__(
-            u.AttrMap(_row(ABOUT_LAYOUT, values), attr, 'normal_selected'),
+            u.AttrMap(_row(PENDING_LAYOUT, values), attr, 'normal_selected'),
             job.job_id,
         )
 
@@ -430,7 +431,7 @@ class AboutToStartJobWidget(_JobRow):
 class ScreenViewQueue(u.WidgetWrap):
     """Lifecycle flow: recently finished → finishing next → recently started → starting next."""
 
-    # Vertical weights for the four sections (ended, finishing, started, about).
+    # Vertical weights for the four sections (ended, finishing, started, pending).
     # Equal split — the bottom section is now a static top-of-pending preview,
     # not a scrolling walker, so it doesn't need extra space. Use F8 for the
     # full interactive pending list.
@@ -479,13 +480,13 @@ class ScreenViewQueue(u.WidgetWrap):
         self.ended_section = _empty_pile()
         self.finishing_section = _empty_pile()
         self.started_section = _empty_pile()
-        self.about_section = _empty_pile()
+        self.pending_section = _empty_pile()
 
         outer = u.Pile([
             ('weight', self.SECTION_WEIGHTS[0], self.ended_section),
             ('weight', self.SECTION_WEIGHTS[1], self.finishing_section),
             ('weight', self.SECTION_WEIGHTS[2], self.started_section),
-            ('weight', self.SECTION_WEIGHTS[3], self.about_section),
+            ('weight', self.SECTION_WEIGHTS[3], self.pending_section),
         ])
         self.outer_pile = outer
 
@@ -523,7 +524,7 @@ class ScreenViewQueue(u.WidgetWrap):
 
     def _section_capacities(self):
         """Approximate row-count budget for each section (ended, finishing,
-        started, about)."""
+        started, pending)."""
         total = max(0, getattr(self.main_screen, 'height', 30) - 2)
         weight_total = sum(self.SECTION_WEIGHTS)
         return tuple(
@@ -605,7 +606,7 @@ class ScreenViewQueue(u.WidgetWrap):
 
     def _render(self):
         width = self._width()
-        ended_cap, finish_cap, started_cap, about_cap = self._section_capacities()
+        ended_cap, finish_cap, started_cap, pending_cap = self._section_capacities()
         now = time.time()
 
         # Plan candidate sets for §2/§3/§4 up-front so the gap-summary
@@ -624,18 +625,18 @@ class ScreenViewQueue(u.WidgetWrap):
                                  if started_cap else [])
         started_visible = {j.job_id for _, j in started_visible_pairs}
 
-        about_plan = self._about_plan(now)
+        pending_plan = self._pending_plan(now)
 
         steady_footer = self._steady_state_footer(
             now, finishing_visible, started_visible)
-        pending_footer = self._pending_depth_footer(about_plan, about_cap)
+        pending_footer = self._pending_depth_footer(pending_plan, pending_cap)
 
         self._render_ended_section(width, ended_cap)
         self._render_finishing_section(
             width, finishing_cands, finish_cap, footer=steady_footer)
-        self._render_started_section(
-            width, started_cands, started_cap, footer=pending_footer)
-        self._render_about_section(width, about_plan, about_cap)
+        self._render_started_section(width, started_cands, started_cap)
+        self._render_pending_section(
+            width, pending_plan, pending_cap, footer=pending_footer)
         self._restore_focus()
 
     def _set_section_contents(self, section_pile, top_widgets, row_widgets,
@@ -779,7 +780,7 @@ class ScreenViewQueue(u.WidgetWrap):
         candidates.sort(key=lambda x: x[0])
         return candidates
 
-    def _about_plan(self, now):
+    def _pending_plan(self, now):
         """Group pending jobs by ETA-known/unknown plus headline stats.
 
         Returns a dict with the ordered visible-eligible list, the no-ETA
@@ -855,22 +856,22 @@ class ScreenViewQueue(u.WidgetWrap):
             parts.append(f"median ran {coarse_duration(int(median))}")
         return _gap_footer(" · ".join(parts))
 
-    def _pending_depth_footer(self, about_plan, about_cap):
-        """Footer for the §3↔§4 gap: pending jobs not visible in §4.
+    def _pending_depth_footer(self, pending_plan, pending_cap):
+        """Footer for the bottom of §4: pending jobs below the visible slice.
 
-        §4 shows only the soonest-to-start `about_cap` rows; everything
+        §4 shows only the soonest-to-start `pending_cap` rows; everything
         further down the queue (and every no-ETA job past the visible
         slice) sits "below the horizon" of the section. The total pending
         count is already in the §4 banner — this footer is specifically
         about the *invisible* tail."""
-        total = about_plan['total']
-        visible = min(total, about_cap) if about_cap else 0
+        total = pending_plan['total']
+        visible = min(total, pending_cap) if pending_cap else 0
         hidden = total - visible
         if hidden <= 0:
             return None
         # No-ETA jobs sit at the tail of `ordered`, so the visible slice
         # only consumes them once it has exhausted every ETA-known row.
-        no_eta = about_plan['no_eta_count']
+        no_eta = pending_plan['no_eta_count']
         with_eta = total - no_eta
         no_eta_visible = max(0, visible - with_eta)
         no_eta_hidden = no_eta - no_eta_visible
@@ -886,7 +887,11 @@ class ScreenViewQueue(u.WidgetWrap):
         title = SectionBanner("Finishing next", width=width)
         col_header = u.AttrMap(_header(FINISHING_LAYOUT), 'faded')
         top = [title, col_header]
-        visible = candidates[:cap] if cap else []
+        # Reserve a row for the footer when one is shown; otherwise it
+        # slides past the bottom of the section and is only revealed by
+        # scrolling focus down to it.
+        row_cap = max(0, cap - 1) if footer is not None else cap
+        visible = candidates[:row_cap] if row_cap else []
         if not candidates:
             top.append(u.Text(("faded", "  (no running jobs with a known end time)")))
             rows = []
@@ -894,7 +899,7 @@ class ScreenViewQueue(u.WidgetWrap):
             rows = [FinishingJobWidget(job) for _, job in visible]
         self._set_section_contents(self.finishing_section, top, rows, footer=footer)
 
-    def _render_started_section(self, width, candidates, cap, footer=None):
+    def _render_started_section(self, width, candidates, cap):
         visible = candidates[-cap:] if cap else []
         # No count in the title: this section is always "the most recently
         # started N jobs" where N is whatever fits in the window.
@@ -907,16 +912,16 @@ class ScreenViewQueue(u.WidgetWrap):
             rows = []
         else:
             rows = [StartedJobWidget(job) for _, job in visible]
-        self._set_section_contents(self.started_section, top, rows, footer=footer)
+        self._set_section_contents(self.started_section, top, rows)
 
-    def _render_about_section(self, width, about_plan, cap):
+    def _render_pending_section(self, width, pending_plan, cap, footer=None):
         """Top of the cluster-wide pending list, sorted by ETA (soonest first).
 
         Just a preview — the full interactive pending list lives in F8.
         """
-        total_pending = about_plan['total']
-        time_limits = about_plan['time_limits']
-        waits = about_plan['waits']
+        total_pending = pending_plan['total']
+        time_limits = pending_plan['time_limits']
+        waits = pending_plan['waits']
         # Title carries the queue depth — unlike the upper sections, the
         # total count of pending jobs is genuine information (not just the
         # number of rows that fit). Append avg requested runtime and avg
@@ -928,17 +933,21 @@ class ScreenViewQueue(u.WidgetWrap):
             parts.append(f"avg waiting {coarse_duration(int(sum(waits) / len(waits)))}")
         title = SectionBanner(f"Starting next  ({', '.join(parts)})",
                               width=width)
-        col_header = u.AttrMap(_header(ABOUT_LAYOUT), 'faded')
+        col_header = u.AttrMap(_header(PENDING_LAYOUT), 'faded')
         top = [title, col_header]
 
-        ordered = about_plan['ordered']
+        ordered = pending_plan['ordered']
+        # Reserve a row for the footer when one is shown; otherwise it
+        # slides past the bottom of the section and is only revealed by
+        # scrolling focus down to it.
+        row_cap = max(0, cap - 1) if footer is not None else cap
         if not ordered:
             top.append(u.Text(("faded", "  (no pending jobs in the queue)")))
             rows = []
         else:
             rows = [AboutToStartJobWidget(job)
-                    for job in (ordered[:cap] if cap else [])]
-        self._set_section_contents(self.about_section, top, rows)
+                    for job in (ordered[:row_cap] if row_cap else [])]
+        self._set_section_contents(self.pending_section, top, rows, footer=footer)
 
     # --- Focus / keypress --------------------------------------------------
     #
@@ -954,7 +963,7 @@ class ScreenViewQueue(u.WidgetWrap):
     def _section_piles(self):
         """The four section piles in display order, mirroring SECTION_WEIGHTS."""
         return (self.ended_section, self.finishing_section,
-                self.started_section, self.about_section)
+                self.started_section, self.pending_section)
 
     @staticmethod
     def _selectable_rows(section_pile):

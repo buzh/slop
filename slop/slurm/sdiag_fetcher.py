@@ -6,6 +6,18 @@ import os
 import subprocess
 
 
+def _n(value, default=0):
+    """Read a sdiag field that may be a bare int or a Slurm 23+ wrapper.
+
+    Newer Slurm versions report numeric fields as `{'set': bool, 'infinite':
+    bool, 'number': N}`. Older ones (and some fields even on newer) are bare
+    ints. This handles both shapes.
+    """
+    if isinstance(value, dict):
+        return value.get('number', default)
+    return value if value is not None else default
+
+
 class SlurmSdiagFetcher:
     """Periodic wrapper around `sdiag --json`.
 
@@ -54,6 +66,31 @@ class SlurmSdiagFetcher:
 
     async def update_once(self):
         await self.fetch()
+
+    def compute_signals(self):
+        """Extract load-gating signals from the latest sdiag snapshot.
+
+        Returns None if no data is available yet, otherwise a dict with:
+            pending_count, latency_us, rji_queued, rji_avg_us, rji_dropped
+        REQUEST_JOB_INFO is the RPC slop drives via `scontrol show jobs`.
+        """
+        if not self.data:
+            return None
+        s = self.data.get('statistics') or {}
+        if not s:
+            return None
+        rji = next(
+            (r for r in s.get('rpcs_by_message_type', []) or []
+             if r.get('message_type') == 'REQUEST_JOB_INFO'),
+            {},
+        )
+        return {
+            'pending_count': len(s.get('pending_rpcs') or []),
+            'latency_us': _n(s.get('gettimeofday_latency')),
+            'rji_queued': _n(rji.get('queued')),
+            'rji_avg_us': _n(rji.get('average_time')),
+            'rji_dropped': _n(rji.get('dropped')),
+        }
 
 
 __all__ = ["SlurmSdiagFetcher"]

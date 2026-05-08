@@ -323,12 +323,21 @@ class Header(u.WidgetWrap):
         u.WidgetWrap.__init__(self, header)
 
     def update(self, view_name=None):
-        """Update header with current view name."""
+        """Update header with current view name. Preserves the right-side indicator."""
         if view_name:
             self.text_left.set_text(f"Slurm Top {__version__} - {view_name}")
         else:
             self.text_left.set_text(f"Slurm Top {__version__}")
-        self.text_right.set_text("")  # Empty - shortcuts now in footer
+
+    def set_indicator(self, palette_attr, dot, label):
+        """Render the load-governor indicator on the right side of the header."""
+        if not dot:
+            self.text_right.set_text("")
+            return
+        markup = [(palette_attr, dot)]
+        if label:
+            markup.append(('header', f' {label}'))
+        self.text_right.set_text(markup)
 
 class Footer(u.WidgetWrap):
     def __init__(self, main_screen=None):
