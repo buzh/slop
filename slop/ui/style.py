@@ -10,6 +10,9 @@ from slop.slurm import is_running, is_ended, is_pending
 PALETTE = [
     # UI Chrome
     ("header",           "white, bold", "dark blue"),
+    ("header_ok",        "light green, bold", "dark blue"),
+    ("header_warn",      "yellow, bold",      "dark blue"),
+    ("header_err",       "light red, bold",   "dark blue"),
     ("footer",           "white, bold", "dark red"),
     ("jobheader",        "white, bold", "dark cyan"),
     ("buttons",          "yellow",      "black"),
