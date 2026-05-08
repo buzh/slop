@@ -887,7 +887,11 @@ class ScreenViewQueue(u.WidgetWrap):
         title = SectionBanner("Finishing next", width=width)
         col_header = u.AttrMap(_header(FINISHING_LAYOUT), 'faded')
         top = [title, col_header]
-        visible = candidates[:cap] if cap else []
+        # Reserve a row for the footer when one is shown; otherwise it
+        # slides past the bottom of the section and is only revealed by
+        # scrolling focus down to it.
+        row_cap = max(0, cap - 1) if footer is not None else cap
+        visible = candidates[:row_cap] if row_cap else []
         if not candidates:
             top.append(u.Text(("faded", "  (no running jobs with a known end time)")))
             rows = []
@@ -933,12 +937,16 @@ class ScreenViewQueue(u.WidgetWrap):
         top = [title, col_header]
 
         ordered = pending_plan['ordered']
+        # Reserve a row for the footer when one is shown; otherwise it
+        # slides past the bottom of the section and is only revealed by
+        # scrolling focus down to it.
+        row_cap = max(0, cap - 1) if footer is not None else cap
         if not ordered:
             top.append(u.Text(("faded", "  (no pending jobs in the queue)")))
             rows = []
         else:
             rows = [AboutToStartJobWidget(job)
-                    for job in (ordered[:cap] if cap else [])]
+                    for job in (ordered[:row_cap] if row_cap else [])]
         self._set_section_contents(self.pending_section, top, rows, footer=footer)
 
     # --- Focus / keypress --------------------------------------------------
