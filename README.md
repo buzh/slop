@@ -110,28 +110,7 @@ I currently don't build `.deb` packages, but if popular demand arises I'll look 
 
 ## Changelog
 
-<details>
-<summary>Click to expand changelog</summary>
-
-### April 30th, 2026: v1.1.8
-
-Adds a new dashboard as a landing screen, and includes numerous minor improvements.
-
-### April 29th, 2026: v1.1.7a
-
-Fixes loop when a user has no job history.
-
-### April 29th, 2026: v1.1.7
-
-Numerous minor bug fixes, as well as a code overhaul that should improve TUI performance by handing off more of the legwork to Urwid itself.
-
-### April 21st, 2026: v1.1.6
-
-Introduces a brand new "job flow" screen which gives a live view of how jobs are starting and ending. It shows an ETA for the highest priority pending jobs, which jobs have just started, which are about to end, and the most recent jobs that did end.
-
-Also adds a new screen that displays statistics from the scheduler and backfiller, along with a view of the pending jobs per partition. These two are still work in progress, so consider them a preview.
-
-</details>
+See [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
