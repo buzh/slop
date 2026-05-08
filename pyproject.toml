@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "slop"
+description = "A top-like TUI monitor for Slurm HPC clusters"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+dynamic = ["version"]
+dependencies = [
+    "urwid>=4.0.0",
+]
+
+[project.scripts]
+slop = "slop.main:main"
+
+[project.urls]
+Homepage = "https://github.com/buzh/slop"
+Issues = "https://github.com/buzh/slop/issues"
+Changelog = "https://github.com/buzh/slop/blob/main/CHANGELOG.md"
+
+[tool.hatch.version]
+path = "slop/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["slop"]
