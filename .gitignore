@@ -3,3 +3,6 @@ CLAUDE.md
 .claude/
 tmp/
 debug/
+dist/
+build/
+*.egg-info/
